@@ -97,6 +97,8 @@
       if (/(мари|маша|maria|mariia)/i.test(m[1])) return '676401561';
       return '';
     }
+    function isCashAccount(a) { return /наличн|кэш|кеш|cash|кошел/i.test(a.name || ''); }
+    function accountLabel(a) { return String(a.name || '').replace(/\s*\([^)]*\)\s*$/, ''); }
     function haptic() { try { if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); } catch (e) {} }
 
     function initTelegram() {
@@ -259,12 +261,13 @@
         { id: 'accounts', icon: '💳', label: 'Счета' },
         { id: 'expense', icon: '📉', label: 'Расходы' },
         { id: 'income', icon: '📈', label: 'Доходы' },
+        { id: 'crypto', icon: '🪙', label: 'Крипта' },
         { id: 'history', icon: '📜', label: 'История' }
       ];
       return html`
         <nav className="fixed bottom-0 inset-x-0 z-30 bg-[#0b0f19]/95 backdrop-blur-xl border-t border-white/5"
           style=${{ paddingBottom: 'var(--app-bottom)' }}>
-          <div className="grid grid-cols-4 px-2 pt-1.5 pb-2">
+          <div className="grid grid-cols-5 px-1 pt-1.5 pb-2">
             ${tabs.map(t => html`
               <button key=${t.id} onClick=${() => { if (t.id !== tab) { haptic(); setTab(t.id); } }}
                 className="flex flex-col items-center gap-0.5 py-1.5 rounded-2xl active:bg-white/5 transition">
@@ -284,13 +287,17 @@
       const net = income - expense;
 
       const personal = user !== 'all';
-      const userName = personal ? ((users || []).find(u => String(u.id) === String(user)) || {}).name || '' : '';
       const nameOf = id => ((users || []).find(u => String(u.id) === String(id)) || {}).name || '';
-      const accounts = personal ? data.accounts.filter(a => { const o = accountOwner(a); return !o || o === String(user); }) : data.accounts;
-      const hidden = personal ? data.accounts.filter(a => { const o = accountOwner(a); return o && o !== String(user); }) : [];
+      const userName = personal ? nameOf(user) : '';
       const sumEur = list => list.reduce((s, a) => s + (a.eur || 0), 0);
-      const ownEur = sumEur(accounts.filter(a => accountOwner(a) === String(user)));
-      const familyEur = sumEur(accounts.filter(a => !accountOwner(a)));
+      const accounts = personal ? data.accounts.filter(a => accountOwner(a) === String(user)) : data.accounts;
+      const cashEur = sumEur(accounts.filter(isCashAccount));
+      const bankEur = sumEur(accounts.filter(a => !isCashAccount(a)));
+      const groups = personal
+        ? [{ key: String(user), title: 'Счета · ' + userName, items: accounts }]
+        : (users || []).map(u => ({ key: String(u.id), title: u.name, items: data.accounts.filter(a => accountOwner(a) === String(u.id)) }))
+          .concat([{ key: 'shared', title: 'Общие', items: data.accounts.filter(a => !accountOwner(a)) }])
+          .filter(g => g.items.length);
 
       const maxEur = Math.max.apply(null, accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
       const negative = accounts.filter(a => a.balance < 0);
@@ -302,19 +309,18 @@
 
           <div className="rounded-3xl p-5 bg-gradient-to-br from-sky-500/20 via-indigo-500/10 to-transparent border border-white/10">
             ${personal ? html`
-              <div className="text-xs uppercase tracking-widest text-slate-400">${userName} · личные + семейные счета</div>
-              <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(ownEur + familyEur), currency) : 'нет курса'}</div>
+              <div className="text-xs uppercase tracking-widest text-slate-400">Личный капитал · ${userName}</div>
+              <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(cashEur + bankEur), currency) : 'нет курса'}</div>
               <div className="grid grid-cols-2 gap-3 mt-4">
                 <div className="rounded-2xl bg-black/20 px-3 py-2.5">
-                  <div className="text-[11px] text-slate-400">Личные</div>
-                  <div className="text-sm font-medium num">${money(conv(ownEur), currency)}</div>
+                  <div className="text-[11px] text-slate-400">Банки и карты</div>
+                  <div className="text-sm font-medium num">${money(conv(bankEur), currency)}</div>
                 </div>
                 <div className="rounded-2xl bg-black/20 px-3 py-2.5">
-                  <div className="text-[11px] text-slate-400">Семейные</div>
-                  <div className="text-sm font-medium num">${money(conv(familyEur), currency)}</div>
+                  <div className="text-[11px] text-slate-400">Наличные</div>
+                  <div className="text-sm font-medium num">${money(conv(cashEur), currency)}</div>
                 </div>
               </div>
-              <div className="text-[11px] text-slate-400 mt-3 num">Капитал семьи: ${money(conv(data.capital.totalEur), currency)}</div>
             ` : html`
               <div className="text-xs uppercase tracking-widest text-slate-400">Капитал семьи · сейчас</div>
               <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(data.capital.totalEur), currency) : 'нет курса'}</div>
@@ -359,57 +365,36 @@
             </div>
           <//>
 
-          <div>
-            <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Счета</div>
-            <${Card} className="divide-y divide-white/5 overflow-hidden">
-              ${accounts.map(a => html`
-                <div key=${a.name} className="px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium truncate">${a.name}</div>
-                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300 font-semibold">${a.currency}</span>
-                        ${accountOwner(a)
-                          ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/15 text-violet-300">👤 ${nameOf(accountOwner(a)) || 'личный'}</span>`
-                          : html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-sky-500/10 text-sky-300">👪 семейный</span>`}
-                        ${a.asOf ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300">сверка ${shortDate(a.asOf)}</span>` : null}
-                        ${a.balance < 0 ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-500/20 text-rose-300 font-medium">требуется сверка/пополнение</span>` : null}
+          ${!accounts.length ? html`<div className="text-center text-slate-500 text-sm py-6">У ${userName} пока нет личных счетов</div>` : null}
+          ${groups.map(g => html`
+            <div key=${g.key}>
+              <div className="px-1 mb-2 flex items-baseline justify-between">
+                <div className="text-xs uppercase tracking-widest text-slate-500">${g.title}</div>
+                ${!personal ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(conv(sumEur(g.items)), currency)}</div>` : null}
+              </div>
+              <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${g.items.map(a => html`
+                  <div key=${a.name} className="px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">${accountLabel(a)}</div>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300 font-semibold">${a.currency}</span>
+                          ${a.asOf ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300">сверка ${shortDate(a.asOf)}</span>` : null}
+                          ${a.balance < 0 ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-500/20 text-rose-300 font-medium">требуется сверка/пополнение</span>` : null}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className=${'text-sm font-semibold num ' + (a.balance < 0 ? 'text-rose-300' : '')}>${money(a.balance, a.currency, a.currency === 'USDT' ? 2 : decFor(a.currency))}</div>
+                        ${a.currency !== currency && a.eur !== null ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(conv(a.eur), currency)}</div>` : null}
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <div className=${'text-sm font-semibold num ' + (a.balance < 0 ? 'text-rose-300' : '')}>${money(a.balance, a.currency, a.currency === 'USDT' ? 2 : decFor(a.currency))}</div>
-                      ${a.currency !== currency && a.eur !== null ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(conv(a.eur), currency)}</div>` : null}
-                    </div>
-                  </div>
-                  <div className="h-1 rounded-full bg-white/5 mt-2 overflow-hidden">
-                    <div className=${'h-full rounded-full bar-fill ' + (a.balance < 0 ? 'bg-rose-400/70' : 'bg-sky-400/60')} style=${{ width: Math.max(2, Math.abs(a.eur || 0) / maxEur * 100) + '%' }}></div>
-                  </div>
-                </div>`)}
-            <//>
-            ${hidden.length ? html`
-              <div className="text-[11px] text-slate-500 mt-2 px-1 num">
-                ${'Скрыты личные кошельки (' + (nameOf(accountOwner(hidden[0])) || 'другой член семьи') + '): ' + hidden.length + ' · ≈ ' + money(conv(sumEur(hidden)), currency) + ' — видны в режиме «Все»'}
-              </div>` : null}
-          </div>
-
-          ${data.crypto.length ? html`
-            <div>
-              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Крипто-позиции</div>
-              <${Card} className="divide-y divide-white/5 overflow-hidden">
-                ${data.crypto.map(c => html`
-                  <div key=${c.ticker} className="px-4 py-3 flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-semibold">${c.ticker}</div>
-                      <div className="text-[11px] text-slate-500 num">${fmt(c.qty, 6)} · вход $${fmt(c.avg, 4)}${c.price ? ' → $' + fmt(c.price, 4) : ''}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-sm font-semibold num">${c.valueEur !== null ? money(conv(c.valueEur), currency) : '—'}</div>
-                      ${c.pnlUsd !== null ? html`<div className=${'text-[11px] num ' + (c.pnlUsd >= 0 ? 'text-emerald-300' : 'text-rose-300')}>${signed(c.pnlUsd, 'USD')} (${c.pnlPct >= 0 ? '+' : ''}${fmt(c.pnlPct, 1)}%)</div>` : null}
+                    <div className="h-1 rounded-full bg-white/5 mt-2 overflow-hidden">
+                      <div className=${'h-full rounded-full bar-fill ' + (a.balance < 0 ? 'bg-rose-400/70' : 'bg-sky-400/60')} style=${{ width: Math.max(2, Math.abs(a.eur || 0) / maxEur * 100) + '%' }}></div>
                     </div>
                   </div>`)}
               <//>
-              ${data.cryptoError ? html`<div className="text-[11px] text-amber-300 mt-2 px-1">CoinGecko: ${data.cryptoError}</div>` : null}
-            </div>` : null}
+            </div>`)}
 
           ${data.fxStats.length ? html`
             <div>
@@ -438,6 +423,111 @@
             </div>` : null}
 
           <div className="text-[11px] text-slate-600 text-center pb-2">Курсы: ${data.fxUpdated || '—'} · обновлено ${data.generatedAt}</div>
+        </div>`;
+    }
+
+    const TRADE_META = {
+      BUY: { label: 'Покупка', badge: 'bg-emerald-500/15 text-emerald-300' },
+      SELL: { label: 'Продажа', badge: 'bg-rose-500/15 text-rose-300' },
+      SWAP: { label: 'Своп', badge: 'bg-violet-500/15 text-violet-300' }
+    };
+
+    function CryptoTab({ data }) {
+      const positions = data.crypto || [];
+      const trades = data.cryptoTrades || [];
+      const s = data.cryptoSummary || {
+        valueUsd: positions.reduce((a, p) => a + (p.valueUsd || 0), 0),
+        costUsd: positions.reduce((a, p) => a + (p.avg || 0) * (p.qty || 0), 0),
+        realizedUsd: positions.reduce((a, p) => a + (p.realizedUsd || 0), 0),
+        stableUsd: 0, complete: positions.every(p => p.valueUsd !== null)
+      };
+      const pricedCost = s.pricedCostUsd !== undefined ? s.pricedCostUsd : s.costUsd;
+      const unrealized = s.valueUsd - pricedCost;
+      const unrealizedPct = pricedCost > 0 ? unrealized / pricedCost * 100 : null;
+      const tone = v => (v >= 0 ? 'text-emerald-300' : 'text-rose-300');
+      const usd = (n, dec) => money(n, 'USD', dec);
+
+      if (!positions.length && !trades.length) {
+        return html`
+          <div className="fade-in text-center py-16 px-6">
+            <div className="text-5xl mb-3">🪙</div>
+            <div className="text-slate-400 text-sm leading-relaxed">Крипто-сделок пока нет.<br />Напишите боту, например: «купил 15 SOL по 120$» или пришлите скриншот сделки.</div>
+          </div>`;
+      }
+
+      return html`
+        <div className="space-y-4 fade-in">
+          <div className="rounded-3xl p-5 bg-gradient-to-br from-amber-500/20 via-violet-500/10 to-transparent border border-white/10">
+            <div className="text-xs uppercase tracking-widest text-slate-400">Крипто-портфель · USD</div>
+            <div className="text-4xl font-semibold num mt-2 tracking-tight">${usd(s.valueUsd, 2)}</div>
+            <div className="grid grid-cols-3 gap-2 mt-4">
+              <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                <div className="text-[11px] text-slate-400">Вложено</div>
+                <div className="text-sm font-medium num">${usd(s.costUsd, 2)}</div>
+              </div>
+              <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                <div className="text-[11px] text-slate-400">Нереализ. PnL</div>
+                <div className=${'text-sm font-medium num ' + tone(unrealized)}>${signed(unrealized, 'USD', 2)}</div>
+                ${unrealizedPct !== null ? html`<div className=${'text-[10px] num ' + tone(unrealized)}>${(unrealizedPct >= 0 ? '+' : '') + fmt(unrealizedPct, 1)}%</div>` : null}
+              </div>
+              <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                <div className="text-[11px] text-slate-400">Реализ. PnL</div>
+                <div className=${'text-sm font-medium num ' + tone(s.realizedUsd)}>${signed(s.realizedUsd, 'USD', 2)}</div>
+              </div>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-3 num">Стейблкоины на кошельке: ${fmt(s.stableUsd, 2)} USDT</div>
+            ${!s.complete ? html`<div className="text-[11px] text-amber-300 mt-1">Часть цен недоступна — стоимость и PnL посчитаны без этих монет.</div>` : null}
+          </div>
+
+          ${positions.length ? html`
+            <div>
+              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Позиции</div>
+              <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${positions.map(p => html`
+                  <div key=${p.ticker} className="px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold">${p.ticker}</div>
+                        <div className="text-[11px] text-slate-500 num">${fmt(p.qty, 8)} · вход ${usd(p.avg, 4)}${p.price ? ' → ' + usd(p.price, 4) : ''}</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-sm font-semibold num">${p.valueUsd !== null ? usd(p.valueUsd, 2) : '—'}</div>
+                        ${p.pnlUsd !== null ? html`<div className=${'text-[11px] num ' + tone(p.pnlUsd)}>${signed(p.pnlUsd, 'USD', 2)} (${p.pnlPct >= 0 ? '+' : ''}${fmt(p.pnlPct, 1)}%)</div>` : null}
+                      </div>
+                    </div>
+                    ${Math.abs(p.realizedUsd || 0) >= 0.01 ? html`<div className="text-[11px] text-slate-500 mt-1 num">Реализовано: <span className=${tone(p.realizedUsd)}>${signed(p.realizedUsd, 'USD', 2)}</span></div>` : null}
+                  </div>`)}
+              <//>
+              ${data.cryptoError ? html`<div className="text-[11px] text-amber-300 mt-2 px-1">CoinGecko: ${data.cryptoError}</div>` : null}
+            </div>` : null}
+
+          ${trades.length ? html`
+            <div>
+              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Сделки</div>
+              <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${trades.map(t => {
+                  const meta = TRADE_META[t.action] || TRADE_META.SWAP;
+                  const priced = t.action === 'SELL' ? t.fromAsset : t.toAsset;
+                  return html`
+                    <div key=${t.id} className="px-4 py-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium num truncate">−${fmt(t.fromAmount, 8)} ${t.fromAsset} → +${fmt(t.toAmount, 8)} ${t.toAsset}</div>
+                        <div className="text-[11px] text-slate-500 num">${shortDate(t.date)}${t.priceUsd ? ' · ' + priced + ' по ' + usd(t.priceUsd, 4) : ''}${t.feeUsd ? ' · комиссия ' + usd(t.feeUsd, 2) : ''}</div>
+                        <div className="flex flex-wrap items-center gap-1 mt-1">
+                          <span className=${'text-[10px] px-1.5 py-0.5 rounded-md ' + meta.badge}>${meta.label}</span>
+                          ${t.user ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/5 text-slate-400">${t.user}</span>` : null}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-sm font-semibold num">${usd(t.valueUsd, 2)}</div>
+                        ${t.action !== 'BUY' ? html`<div className=${'text-[11px] num ' + tone(t.realizedUsd)}>PnL ${signed(t.realizedUsd, 'USD', 2)}</div>` : null}
+                      </div>
+                    </div>`;
+                })}
+              <//>
+            </div>` : null}
+
+          <div className="text-[11px] text-slate-600 text-center pb-2">Цены: CoinGecko · аналитика в USD/USDT · обновлено ${data.generatedAt}</div>
         </div>`;
     }
 
@@ -706,12 +796,13 @@
       else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} />`;
       else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" tx=${monthTx} budgets=${data.budgets} showBudgets=${user === 'all'} month=${month} />`;
       else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" tx=${monthTx} budgets=${[]} showBudgets=${false} month=${month} />`;
+      else if (tab === 'crypto') content = html`<${CryptoTab} data=${data} />`;
       else content = html`<${HistoryTab} history=${data.history} user=${user} />`;
 
       return html`
         <div className="min-h-screen">
           <${Header} month=${month} setMonth=${setMonth} months=${data ? data.months : []} user=${user} setUser=${setUser}
-            users=${users} loading=${loading} onRefresh=${() => { haptic(); load(month); }} showMonth=${tab !== 'history'} />
+            users=${users} loading=${loading} onRefresh=${() => { haptic(); load(month); }} showMonth=${tab !== 'history' && tab !== 'crypto'} />
           <main className="px-4 pt-4" style=${{ paddingBottom: 'calc(96px + var(--app-bottom))' }}>
             ${error && data ? html`<div className="mb-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-xs px-3 py-2">${error}</div>` : null}
             <div className=${loading && data ? 'opacity-60 transition-opacity' : 'transition-opacity'}>${content}</div>
