@@ -279,7 +279,7 @@
         </nav>`;
     }
 
-    function AccountsTab({ data, currency, setCurrency, monthTx, month, user, users }) {
+    function AccountsTab({ data, currency, setCurrency, monthTx, month, user, users, setTab }) {
       const rate = data.rates && data.rates[currency] ? data.rates[currency] : null;
       const conv = eur => (eur === null || eur === undefined || !rate ? null : eur * rate);
       const income = monthTx.filter(t => t.kind === 'income').reduce((s, t) => s + (t.eur || 0), 0);
@@ -317,9 +317,28 @@
         const rank = g => { const i = FAMILY_ORDER.indexOf(g.name.toLowerCase()); return i === -1 ? FAMILY_ORDER.length : i; };
         family.sort((x, y) => rank(x) - rank(y));
       }
-      const groups = personal
-        ? [{ key: String(user), title: 'Счета · ' + userName, items: accounts }]
-        : [{ key: 'family', title: 'Счета семьи', items: family }].filter(g => g.items.length);
+      // Стейблкоин-счета с нулём/пылью (< 0.01) в списке не показываем — в капитал они входят как и раньше
+      const visible = a => !(/^(USDT|USDC)$/.test(a.currency) && Math.abs(a.balance || 0) < 0.01);
+      // Крипто-портфель профиля — отдельной карточкой в списке, чтобы сумма карточек сходилась с шапкой
+      const cryptoRep = personal ? ((data.cryptoByUser || {})[String(user)] || (!data.cryptoByUser && String(user) === String(data.cryptoOwner || '408235862') ? data.crypto : null)) : data.crypto;
+      const cryptoAssets = cryptoRep && Array.isArray(cryptoRep.assets) ? cryptoRep.assets.filter(a => a.holdings > 0) : [];
+      const showCrypto = cryptoAssets.length > 0 && cryptoEur > 0;
+      const groups = (personal
+        ? [{ key: String(user), title: 'Счета · ' + userName, items: accounts.filter(visible) }]
+        : [{ key: 'family', title: 'Счета семьи', items: family.filter(visible) }]).filter(g => g.items.length || showCrypto);
+      const cryptoCard = showCrypto ? html`
+        <button key="crypto-card" onClick=${() => { haptic(); if (setTab) setTab('crypto'); }} className="w-full text-left px-4 py-3 active:bg-white/5 transition block">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium truncate">🪙 Крипто-портфель <span className="text-slate-500">›</span></div>
+              <div className="text-[11px] text-slate-500 mt-1 truncate">${cryptoAssets.slice(0, 6).map(a => a.asset).join(' · ')}</div>
+            </div>
+            <div className="text-right shrink-0">
+              <div className="text-sm font-semibold num">${money(conv(cryptoEur), currency)}</div>
+              ${currency !== 'USD' && cryptoRep.totalValueUsd ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(cryptoRep.totalValueUsd, 'USD', 0)}</div>` : null}
+            </div>
+          </div>
+        </button>` : null;
 
       const maxEur = Math.max.apply(null, accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
       const negative = accounts.filter(a => a.balance < 0);
@@ -397,9 +416,10 @@
             <div key=${g.key}>
               <div className="px-1 mb-2 flex items-baseline justify-between">
                 <div className="text-xs uppercase tracking-widest text-slate-500">${g.title}</div>
-                ${!personal ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(conv(sumEur(g.items)), currency)}</div>` : null}
+                ${!personal ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(conv(sumEur(g.items) + (showCrypto ? cryptoEur : 0)), currency)}</div>` : null}
               </div>
               <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${cryptoCard}
                 ${g.items.map(a => html`
                   <div key=${a.name} className="px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
@@ -881,7 +901,7 @@
       let content = null;
       if (error && !data) content = html`<${ErrorBox} message=${error} onRetry=${() => load(month)} />`;
       else if (!data) content = html`<${Skeleton} />`;
-      else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} />`;
+      else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} setTab=${setTab} />`;
       else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" tx=${monthTx} budgets=${data.budgets} showBudgets=${user === 'all'} month=${month} />`;
       else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" tx=${monthTx} budgets=${[]} showBudgets=${false} month=${month} />`;
       else if (tab === 'crypto') content = html`<${CryptoTab} data=${data} user=${user} users=${users} />`;
