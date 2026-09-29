@@ -439,10 +439,17 @@
     const TRADE_META = {
       BUY: { label: 'Покупка', badge: 'bg-emerald-500/15 text-emerald-300' },
       SELL: { label: 'Продажа', badge: 'bg-rose-500/15 text-rose-300' },
-      SWAP: { label: 'Своп', badge: 'bg-violet-500/15 text-violet-300' }
+      SWAP: { label: 'Своп', badge: 'bg-violet-500/15 text-violet-300' },
+      DEPOSIT: { label: 'Остаток', badge: 'bg-sky-500/15 text-sky-300' },
+      WITHDRAW: { label: 'Списание', badge: 'bg-amber-500/15 text-amber-300' }
     };
+    const ASSET_COLORS = ['#f7931a', '#627eea', '#14f195', '#4caf50', '#ff0013', '#ff6600', '#f4b728', '#60a5fa', '#a78bfa', '#94a3b8'];
+
+    function priceDec(p) { return p === null || p === undefined ? 2 : p < 0.01 ? 8 : p < 1 ? 5 : 2; }
+    function qtyDec(q) { return q >= 1000 ? 0 : q >= 1 ? 4 : 8; }
 
     function CryptoTab({ data, user, users }) {
+      const [showAll, setShowAll] = useState(false); // хук — до любого раннего return
       const owner = String(data.cryptoOwner || '408235862');
       if (user !== 'all' && String(user) !== owner) {
         const ownerName = ((users || []).find(u => String(u.id) === owner) || {}).name || 'Stefan';
@@ -453,25 +460,21 @@
             <div className="text-slate-500 text-xs mt-2 leading-relaxed">Весь крипто-портфель и стейблкоины закреплены за ${ownerName}.<br />Они не входят в личный капитал и видны в режимах «${ownerName}» и «Все».</div>
           </div>`;
       }
-      const positions = data.crypto || [];
-      const trades = data.cryptoTrades || [];
-      const s = data.cryptoSummary || {
-        valueUsd: positions.reduce((a, p) => a + (p.valueUsd || 0), 0),
-        costUsd: positions.reduce((a, p) => a + (p.avg || 0) * (p.qty || 0), 0),
-        realizedUsd: positions.reduce((a, p) => a + (p.realizedUsd || 0), 0),
-        stableUsd: 0, complete: positions.every(p => p.valueUsd !== null)
-      };
-      const pricedCost = s.pricedCostUsd !== undefined ? s.pricedCostUsd : s.costUsd;
-      const unrealized = s.valueUsd - pricedCost;
-      const unrealizedPct = pricedCost > 0 ? unrealized / pricedCost * 100 : null;
+      const c = data.crypto && !Array.isArray(data.crypto) ? data.crypto : { assets: [], closed: [], trades: [] };
+      const assets = c.assets || [];
+      const closed = c.closed || [];
+      const trades = c.trades || c.recentTrades || [];
       const tone = v => (v >= 0 ? 'text-emerald-300' : 'text-rose-300');
-      const usd = (n, dec) => money(n, 'USD', dec);
+      const usd = (n, dec) => money(n, 'USD', dec === undefined ? 2 : dec);
+      const total = c.totalValueUsd || 0;
+      const priced = assets.filter(a => a.valueUsd);
+      const colorOf = a => ASSET_COLORS[assets.indexOf(a) % ASSET_COLORS.length];
 
-      if (!positions.length && !trades.length) {
+      if (!assets.length && !trades.length) {
         return html`
           <div className="fade-in text-center py-16 px-6">
             <div className="text-5xl mb-3">🪙</div>
-            <div className="text-slate-400 text-sm leading-relaxed">Крипто-сделок пока нет.<br />Напишите боту, например: «купил 15 SOL по 120$» или пришлите скриншот сделки.</div>
+            <div className="text-slate-400 text-sm leading-relaxed">Крипто-сделок пока нет.<br />Напишите боту, например: «купил 0.05 BTC по 64000» или пришлите скриншот свопа.</div>
           </div>`;
       }
 
@@ -479,75 +482,110 @@
         <div className="space-y-4 fade-in">
           <div className="rounded-3xl p-5 bg-gradient-to-br from-amber-500/20 via-violet-500/10 to-transparent border border-white/10">
             <div className="text-xs uppercase tracking-widest text-slate-400">Крипто-портфель · USD</div>
-            <div className="text-4xl font-semibold num mt-2 tracking-tight">${usd(s.valueUsd, 2)}</div>
+            <div className="text-4xl font-semibold num mt-2 tracking-tight">${usd(total)}</div>
+            ${c.unrealizedPnLPct !== null && c.unrealizedPnLPct !== undefined ? html`
+              <div className=${'text-sm num mt-1 ' + tone(c.unrealizedPnLUsd)}>${signed(c.unrealizedPnLUsd, 'USD', 2)} (${(c.unrealizedPnLPct >= 0 ? '+' : '') + fmt(c.unrealizedPnLPct, 2)}%)</div>` : null}
             <div className="grid grid-cols-3 gap-2 mt-4">
               <div className="rounded-2xl bg-black/20 px-3 py-2.5">
                 <div className="text-[11px] text-slate-400">Вложено</div>
-                <div className="text-sm font-medium num">${usd(s.costUsd, 2)}</div>
+                <div className="text-sm font-medium num">${usd(c.totalInvestedUsd)}</div>
               </div>
               <div className="rounded-2xl bg-black/20 px-3 py-2.5">
                 <div className="text-[11px] text-slate-400">Нереализ. PnL</div>
-                <div className=${'text-sm font-medium num ' + tone(unrealized)}>${signed(unrealized, 'USD', 2)}</div>
-                ${unrealizedPct !== null ? html`<div className=${'text-[10px] num ' + tone(unrealized)}>${(unrealizedPct >= 0 ? '+' : '') + fmt(unrealizedPct, 1)}%</div>` : null}
+                <div className=${'text-sm font-medium num ' + tone(c.unrealizedPnLUsd)}>${signed(c.unrealizedPnLUsd, 'USD', 2)}</div>
               </div>
               <div className="rounded-2xl bg-black/20 px-3 py-2.5">
                 <div className="text-[11px] text-slate-400">Реализ. PnL</div>
-                <div className=${'text-sm font-medium num ' + tone(s.realizedUsd)}>${signed(s.realizedUsd, 'USD', 2)}</div>
+                <div className=${'text-sm font-medium num ' + tone(c.realizedPnLUsd)}>${signed(c.realizedPnLUsd, 'USD', 2)}</div>
               </div>
             </div>
-            <div className="text-[11px] text-slate-400 mt-3 num">Стейблкоины на кошельке: ${fmt(s.stableUsd, 2)} USDT</div>
-            ${!s.complete ? html`<div className="text-[11px] text-amber-300 mt-1">Часть цен недоступна — стоимость и PnL посчитаны без этих монет.</div>` : null}
+            ${priced.length && total > 0 ? html`
+              <div className="mt-4">
+                <div className="flex h-2 rounded-full overflow-hidden bg-white/5">
+                  ${priced.map(a => html`<div key=${a.asset} style=${{ width: (a.valueUsd / total * 100) + '%', background: colorOf(a) }}></div>`)}
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2">
+                  ${priced.slice(0, 6).map(a => html`
+                    <div key=${a.asset} className="flex items-center gap-1.5 text-[11px] text-slate-400 num">
+                      <span className="w-2 h-2 rounded-full" style=${{ background: colorOf(a) }}></span>${a.asset} ${fmt(a.valueUsd / total * 100, 1)}%
+                    </div>`)}
+                </div>
+              </div>` : null}
+            <div className="text-[11px] text-slate-400 mt-3 num">USDT на кошельке: ${fmt(c.stableUsd || 0, 6)}</div>
+            ${!c.complete ? html`<div className="text-[11px] text-amber-300 mt-1">Часть цен недоступна — итог без этих монет.</div>` : null}
+            ${c.error ? html`<div className="text-[11px] text-amber-300 mt-1">CoinGecko: ${c.error}</div>` : null}
           </div>
 
-          ${positions.length ? html`
+          ${assets.length ? html`
             <div>
-              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Позиции</div>
+              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Активы</div>
               <${Card} className="divide-y divide-white/5 overflow-hidden">
-                ${positions.map(p => html`
-                  <div key=${p.ticker} className="px-4 py-3">
+                ${assets.map(a => html`
+                  <div key=${a.asset} className="px-4 py-3">
                     <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold">${p.ticker}</div>
-                        <div className="text-[11px] text-slate-500 num">${fmt(p.qty, 8)} · вход ${usd(p.avg, 4)}${p.price ? ' → ' + usd(p.price, 4) : ''}</div>
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style=${{ background: colorOf(a) }}></span>
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold">${a.asset} <span className="text-[11px] font-normal text-slate-500">${a.name}</span></div>
+                          <div className="text-[11px] text-slate-500 num truncate">${fmt(a.holdings, qtyDec(a.holdings))} · вход ${usd(a.avgBuyPrice, priceDec(a.avgBuyPrice))}${a.currentPrice !== null ? ' → ' + usd(a.currentPrice, priceDec(a.currentPrice)) : ''}</div>
+                        </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <div className="text-sm font-semibold num">${p.valueUsd !== null ? usd(p.valueUsd, 2) : '—'}</div>
-                        ${p.pnlUsd !== null ? html`<div className=${'text-[11px] num ' + tone(p.pnlUsd)}>${signed(p.pnlUsd, 'USD', 2)} (${p.pnlPct >= 0 ? '+' : ''}${fmt(p.pnlPct, 1)}%)</div>` : null}
+                        <div className="text-sm font-semibold num">${a.valueUsd !== null ? usd(a.valueUsd) : '—'}</div>
+                        ${a.pnlUsd !== null ? html`<div className=${'text-[11px] num ' + tone(a.pnlUsd)}>${signed(a.pnlUsd, 'USD', 2)}${a.pnlPct !== null ? ' (' + (a.pnlPct >= 0 ? '+' : '') + fmt(a.pnlPct, 2) + '%)' : ''}</div>` : null}
                       </div>
                     </div>
-                    ${Math.abs(p.realizedUsd || 0) >= 0.01 ? html`<div className="text-[11px] text-slate-500 mt-1 num">Реализовано: <span className=${tone(p.realizedUsd)}>${signed(p.realizedUsd, 'USD', 2)}</span></div>` : null}
+                    ${Math.abs(a.realizedPnLUsd || 0) >= 0.01 ? html`<div className="text-[11px] text-slate-500 mt-1 num pl-5">Реализовано: <span className=${tone(a.realizedPnLUsd)}>${signed(a.realizedPnLUsd, 'USD', 2)}</span></div>` : null}
                   </div>`)}
               <//>
-              ${data.cryptoError ? html`<div className="text-[11px] text-amber-300 mt-2 px-1">CoinGecko: ${data.cryptoError}</div>` : null}
+            </div>` : null}
+
+          ${closed.length ? html`
+            <div>
+              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Закрытые позиции</div>
+              <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${closed.map(a => html`
+                  <div key=${a.asset} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                    <div className="text-sm">${a.asset} <span className="text-[11px] text-slate-500">${a.name}</span></div>
+                    <div className=${'text-sm font-medium num ' + tone(a.realizedPnLUsd)}>${signed(a.realizedPnLUsd, 'USD', 2)}</div>
+                  </div>`)}
+              <//>
             </div>` : null}
 
           ${trades.length ? html`
             <div>
               <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Сделки</div>
               <${Card} className="divide-y divide-white/5 overflow-hidden">
-                ${trades.map(t => {
-                  const meta = TRADE_META[t.action] || TRADE_META.SWAP;
-                  const priced = t.action === 'SELL' ? t.fromAsset : t.toAsset;
+                ${(showAll ? trades : trades.slice(0, 10)).map(t => {
+                  const meta = TRADE_META[t.type] || TRADE_META.SWAP;
+                  const priced = t.type === 'SELL' ? t.fromAsset : t.toAsset;
+                  const left = t.fromAsset ? '−' + fmt(t.fromAmount, qtyDec(t.fromAmount)) + ' ' + t.fromAsset : '';
+                  const right = t.toAsset ? '+' + fmt(t.toAmount, qtyDec(t.toAmount)) + ' ' + t.toAsset : '';
                   return html`
                     <div key=${t.id} className="px-4 py-3 flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-sm font-medium num truncate">−${fmt(t.fromAmount, 8)} ${t.fromAsset} → +${fmt(t.toAmount, 8)} ${t.toAsset}</div>
-                        <div className="text-[11px] text-slate-500 num">${shortDate(t.date)}${t.priceUsd ? ' · ' + priced + ' по ' + usd(t.priceUsd, 4) : ''}${t.feeUsd ? ' · комиссия ' + usd(t.feeUsd, 2) : ''}</div>
+                        <div className="text-sm font-medium num truncate">${[left, right].filter(Boolean).join(' → ')}</div>
+                        <div className="text-[11px] text-slate-500 num truncate">${shortDate(t.date)}${t.priceUsd && t.type !== 'WITHDRAW' ? ' · ' + priced + ' по ' + usd(t.priceUsd, priceDec(t.priceUsd)) : ''}${t.feeUsd ? ' · комиссия ' + usd(t.feeUsd) : ''}</div>
                         <div className="flex flex-wrap items-center gap-1 mt-1">
                           <span className=${'text-[10px] px-1.5 py-0.5 rounded-md ' + meta.badge}>${meta.label}</span>
-                          ${t.user ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/5 text-slate-400">${t.user}</span>` : null}
+                          ${t.note && /оценка|оценена|остаток|списание|сверка/i.test(t.note) ? html`<span className="text-[10px] text-slate-500 truncate">${t.note.replace(/^Wallet 2 Сам · /, '')}</span>` : null}
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <div className="text-sm font-semibold num">${usd(t.valueUsd, 2)}</div>
-                        ${t.action !== 'BUY' ? html`<div className=${'text-[11px] num ' + tone(t.realizedUsd)}>PnL ${signed(t.realizedUsd, 'USD', 2)}</div>` : null}
+                        <div className="text-sm font-semibold num">${usd(t.valueUsd)}</div>
+                        ${t.fromAsset && !/^USD/.test(t.fromAsset) && t.type !== 'DEPOSIT' ? html`<div className=${'text-[11px] num ' + tone(t.realizedPnLUsd)}>PnL ${signed(t.realizedPnLUsd, 'USD', 2)}</div>` : null}
                       </div>
                     </div>`;
                 })}
               <//>
+              ${trades.length > 10 ? html`
+                <button onClick=${() => { haptic(); setShowAll(!showAll); }}
+                  className="w-full mt-2 py-2.5 rounded-2xl bg-white/5 border border-white/5 text-sm text-slate-300 active:bg-white/10">
+                  ${showAll ? 'Свернуть' : 'Все сделки (' + trades.length + ')'}
+                </button>` : null}
             </div>` : null}
 
-          <div className="text-[11px] text-slate-600 text-center pb-2">Цены: CoinGecko · аналитика в USD/USDT · обновлено ${data.generatedAt}</div>
+          <div className="text-[11px] text-slate-600 text-center pb-2">Цены: CoinGecko · метод средней цены (WAC) · всё в USD/USDT · ${data.generatedAt}</div>
         </div>`;
     }
 
