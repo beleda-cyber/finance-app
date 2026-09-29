@@ -97,7 +97,7 @@
       if (/(мари|маша|maria|mariia)/i.test(m[1])) return '676401561';
       return '';
     }
-    function isCashAccount(a) { return /наличн|кэш|кеш|cash|кошел/i.test(a.name || ''); }
+    function isCashAccount(a) { const n = a.name || ''; return /наличн|кэш|кеш|cash|кошел/i.test(n) && !/крипто|crypto|usdt|usdc/i.test(n); }
     function accountLabel(a) { return String(a.name || '').replace(/\s*\([^)]*\)\s*$/, ''); }
     function haptic() { try { if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); } catch (e) {} }
 
@@ -256,7 +256,7 @@
         </header>`;
     }
 
-    function BottomNav({ tab, setTab }) {
+    function BottomNav({ tab, setTab, muted }) {
       const tabs = [
         { id: 'accounts', icon: '💳', label: 'Счета' },
         { id: 'expense', icon: '📉', label: 'Расходы' },
@@ -271,7 +271,7 @@
             ${tabs.map(t => html`
               <button key=${t.id} onClick=${() => { if (t.id !== tab) { haptic(); setTab(t.id); } }}
                 className="flex flex-col items-center gap-0.5 py-1.5 rounded-2xl active:bg-white/5 transition">
-                <span className=${'text-xl transition-transform duration-200 ' + (tab === t.id ? 'scale-110' : 'opacity-50 grayscale')}>${t.icon}</span>
+                <span className=${'text-xl transition-transform duration-200 ' + (tab === t.id ? 'scale-110' : 'opacity-50 grayscale') + ((muted || []).indexOf(t.id) !== -1 ? ' opacity-20' : '')}>${t.icon}</span>
                 <span className=${'text-[11px] font-medium ' + (tab === t.id ? 'text-white' : 'text-slate-500')}>${t.label}</span>
                 <span className=${'h-1 w-1 rounded-full transition-all ' + (tab === t.id ? 'bg-sky-400' : 'bg-transparent')}></span>
               </button>`)}
@@ -293,10 +293,15 @@
       const accounts = personal ? data.accounts.filter(a => accountOwner(a) === String(user)) : data.accounts;
       const cashEur = sumEur(accounts.filter(isCashAccount));
       const bankEur = sumEur(accounts.filter(a => !isCashAccount(a)));
+      const cryptoOwner = String(data.cryptoOwner || '408235862');
+      const cryptoEur = personal ? (String(user) === cryptoOwner ? data.capital.cryptoEur : 0) : data.capital.cryptoEur;
+      const byUser = data.capitalByUser && data.capitalByUser[String(user)];
+      const personalTotal = byUser ? byUser.totalEur : cashEur + bankEur + cryptoEur;
+      const orphans = personal ? [] : data.accounts.filter(a => !accountOwner(a));
       const groups = personal
         ? [{ key: String(user), title: 'Счета · ' + userName, items: accounts }]
-        : (users || []).map(u => ({ key: String(u.id), title: u.name, items: data.accounts.filter(a => accountOwner(a) === String(u.id)) }))
-          .concat([{ key: 'shared', title: 'Общие', items: data.accounts.filter(a => !accountOwner(a)) }])
+        : (users || []).map(u => ({ key: String(u.id), title: 'Счета · ' + u.name, items: data.accounts.filter(a => accountOwner(a) === String(u.id)) }))
+          .concat([{ key: 'orphans', title: '⚠️ Без владельца — запустите миграцию', items: orphans }])
           .filter(g => g.items.length);
 
       const maxEur = Math.max.apply(null, accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
@@ -310,8 +315,8 @@
           <div className="rounded-3xl p-5 bg-gradient-to-br from-sky-500/20 via-indigo-500/10 to-transparent border border-white/10">
             ${personal ? html`
               <div className="text-xs uppercase tracking-widest text-slate-400">Личный капитал · ${userName}</div>
-              <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(cashEur + bankEur), currency) : 'нет курса'}</div>
-              <div className="grid grid-cols-2 gap-3 mt-4">
+              <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(personalTotal), currency) : 'нет курса'}</div>
+              <div className=${'grid gap-2 mt-4 ' + (cryptoEur ? 'grid-cols-3' : 'grid-cols-2')}>
                 <div className="rounded-2xl bg-black/20 px-3 py-2.5">
                   <div className="text-[11px] text-slate-400">Банки и карты</div>
                   <div className="text-sm font-medium num">${money(conv(bankEur), currency)}</div>
@@ -320,6 +325,11 @@
                   <div className="text-[11px] text-slate-400">Наличные</div>
                   <div className="text-sm font-medium num">${money(conv(cashEur), currency)}</div>
                 </div>
+                ${cryptoEur ? html`
+                  <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                    <div className="text-[11px] text-slate-400">Крипто</div>
+                    <div className="text-sm font-medium num">${money(conv(cryptoEur), currency)}</div>
+                  </div>` : null}
               </div>
             ` : html`
               <div className="text-xs uppercase tracking-widest text-slate-400">Капитал семьи · сейчас</div>
@@ -432,7 +442,17 @@
       SWAP: { label: 'Своп', badge: 'bg-violet-500/15 text-violet-300' }
     };
 
-    function CryptoTab({ data }) {
+    function CryptoTab({ data, user, users }) {
+      const owner = String(data.cryptoOwner || '408235862');
+      if (user !== 'all' && String(user) !== owner) {
+        const ownerName = ((users || []).find(u => String(u.id) === owner) || {}).name || 'Stefan';
+        return html`
+          <div className="fade-in text-center py-16 px-6">
+            <div className="text-5xl mb-3 grayscale opacity-60">🪙</div>
+            <div className="text-slate-300 text-sm font-medium">Криптоактивов нет</div>
+            <div className="text-slate-500 text-xs mt-2 leading-relaxed">Весь крипто-портфель и стейблкоины закреплены за ${ownerName}.<br />Они не входят в личный капитал и видны в режимах «${ownerName}» и «Все».</div>
+          </div>`;
+      }
       const positions = data.crypto || [];
       const trades = data.cryptoTrades || [];
       const s = data.cryptoSummary || {
@@ -796,7 +816,7 @@
       else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} />`;
       else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" tx=${monthTx} budgets=${data.budgets} showBudgets=${user === 'all'} month=${month} />`;
       else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" tx=${monthTx} budgets=${[]} showBudgets=${false} month=${month} />`;
-      else if (tab === 'crypto') content = html`<${CryptoTab} data=${data} />`;
+      else if (tab === 'crypto') content = html`<${CryptoTab} data=${data} user=${user} users=${users} />`;
       else content = html`<${HistoryTab} history=${data.history} user=${user} />`;
 
       return html`
@@ -807,7 +827,7 @@
             ${error && data ? html`<div className="mb-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-xs px-3 py-2">${error}</div>` : null}
             <div className=${loading && data ? 'opacity-60 transition-opacity' : 'transition-opacity'}>${content}</div>
           </main>
-          <${BottomNav} tab=${tab} setTab=${setTab} />
+          <${BottomNav} tab=${tab} setTab=${setTab} muted=${user !== 'all' && data && String(user) !== String(data.cryptoOwner || '408235862') ? ['crypto'] : []} />
         </div>`;
     }
 
