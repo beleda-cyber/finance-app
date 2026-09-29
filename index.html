@@ -1,198 +1,661 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Семейный Бюджет</title>
-  <!-- Telegram WebApp SDK -->
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f19">
+  <title>Семейный бюджет</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- React & ReactDOM CDN -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <!-- Babel для запуска JSX -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
-    body {
-      background-color: var(--tg-theme-bg-color, #0f172a);
-      color: var(--tg-theme-text-color, #f8fafc);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    :root {
+      --bg: #0b0f19;
+      --app-top: calc(var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)) + var(--tg-content-safe-area-inset-top, 0px));
+      --app-bottom: var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
     }
+    html, body { background: var(--bg); color: #e5e7eb; margin: 0; -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .num { font-variant-numeric: tabular-nums; }
+    .fade-in { animation: fadeIn .28s ease-out both; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .bar-fill { transition: width .6s cubic-bezier(.2,.8,.2,1); }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { scrollbar-width: none; }
+    .skeleton { background: linear-gradient(90deg, #111827 0%, #1f2937 50%, #111827 100%); background-size: 200% 100%; animation: shimmer 1.2s infinite linear; }
+    @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
   </style>
 </head>
-<body class="p-4 pb-12">
+<body>
   <div id="root"></div>
+  <script>
+  (function () {
+    'use strict';
 
-  <script type="text/babel">
-    const API_URL = "https://script.google.com/macros/s/AKfycbzpGbFsakhdjlQohuK5yEtYxnStjmTIkoxYi0Z51h5kmyqXAPzUoZ2DhvngBldOX9LTLQ/exec?action=getData";
+    /* ================= НАСТРОЙКА: вставьте URL веб-приложения Apps Script ================= */
+    const CONFIG = {
+      API_URL: 'https://script.google.com/macros/s/ВСТАВЬТЕ_ID_РАЗВЕРТЫВАНИЯ/exec',
+      CURRENCIES: ['EUR', 'RSD', 'USD', 'RUB'],
+      FALLBACK_USERS: [{ id: '408235862', name: 'Stefan' }, { id: '676401561', name: 'Мария' }]
+    };
 
-    function App() {
-      const [data, setData] = React.useState(null);
-      const [loading, setLoading] = React.useState(true);
-      const [userFilter, setUserFilter] = React.useState("ALL");
+    const { useState, useEffect, useMemo, useRef, useCallback } = React;
+    const html = htm.bind(React.createElement);
+    const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
 
-      const loadData = () => {
-        setLoading(true);
-        fetch(API_URL)
-          .then(res => res.json())
-          .then(res => {
-            if (res.ok) setData(res);
-            setLoading(false);
-          })
-          .catch(err => {
-            console.error(err);
-            setLoading(false);
-          });
-      };
+    const PALETTE = ['#60a5fa', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#f87171', '#22d3ee', '#fb923c', '#4ade80', '#e879f9', '#94a3b8', '#facc15', '#2dd4bf', '#c084fc'];
+    const SYMBOL = { EUR: '€', RSD: 'RSD', USD: '$', RUB: '₽', USDT: 'USDT', USDC: 'USDC' };
+    const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+    const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+    const WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
-      React.useEffect(() => {
-        if (window.Telegram && window.Telegram.WebApp) {
-          window.Telegram.WebApp.ready();
-          window.Telegram.WebApp.expand();
-        }
-        loadData();
-      }, []);
+    /* ================================ Утилиты ================================ */
 
-      if (loading) {
-        return (
-          <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
-            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-            <p className="text-sm opacity-70">Синхронизация с таблицей...</p>
-          </div>
-        );
-      }
+    function fmt(n, maxDec) {
+      if (n === null || n === undefined || isNaN(n)) return '—';
+      const d = maxDec === undefined ? 2 : maxDec;
+      return Number(n).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: d });
+    }
+    function decFor(cur) { return cur === 'RSD' || cur === 'RUB' ? 0 : 2; }
+    function money(n, cur, dec) { return fmt(n, dec === undefined ? decFor(cur) : dec) + ' ' + (SYMBOL[cur] || cur); }
+    function signed(n, cur, dec) { return (n > 0 ? '+' : n < 0 ? '−' : '') + money(Math.abs(n), cur, dec); }
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+    function localToday() { const d = new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+    function currentMonth() { return localToday().slice(0, 7); }
+    function monthTitle(m) { const p = m.split('-'); return MONTHS[Number(p[1]) - 1] + ' ' + p[0]; }
+    function shiftMonth(m, delta) {
+      const p = m.split('-').map(Number);
+      const d = new Date(p[0], p[1] - 1 + delta, 1);
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1);
+    }
+    function dayTitle(iso) {
+      const today = localToday();
+      const y = new Date(); y.setDate(y.getDate() - 1);
+      const yesterday = y.getFullYear() + '-' + pad2(y.getMonth() + 1) + '-' + pad2(y.getDate());
+      if (iso === today) return 'Сегодня';
+      if (iso === yesterday) return 'Вчера';
+      const p = iso.split('-').map(Number);
+      const d = new Date(p[0], p[1] - 1, p[2]);
+      return p[2] + ' ' + MONTHS_GEN[p[1] - 1] + (p[0] !== new Date().getFullYear() ? ' ' + p[0] : '') + ', ' + WEEKDAYS[d.getDay()];
+    }
+    function shortDate(iso) { const p = String(iso).split('-'); return p.length === 3 ? p[2] + '.' + p[1] : iso; }
+    function haptic() { try { if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); } catch (e) {} }
 
-      if (!data) {
-        return (
-          <div className="text-center py-10">
-            <p className="text-red-400 mb-3">Не удалось загрузить данные</p>
-            <button onClick={loadData} className="px-4 py-2 bg-blue-600 rounded-lg text-sm font-medium">Повторить</button>
-          </div>
-        );
-      }
-
-      // Список уникальных пользователей
-      const users = Array.from(new Set(data.transactions.map(t => t.user).filter(Boolean)));
-      
-      // Фильтрация транзакций
-      const filteredTx = data.transactions.filter(t => {
-        if (userFilter === "ALL") return true;
-        return t.user === userFilter;
-      });
-
-      // Расчет суммы расходов
-      const totalSpentEur = filteredTx
-        .filter(t => t.type.toLowerCase().includes("расход") || t.type.toLowerCase().includes("expense"))
-        .reduce((sum, t) => sum + Math.abs(t.amountEur || 0), 0);
-
-      // Общий баланс всех счетов
-      const totalBalanceEur = data.accounts.reduce((sum, a) => sum + (a.balanceEur || 0), 0);
-
-      return (
-        <div className="max-w-md mx-auto space-y-5">
-          {/* Верхняя панель */}
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-xl font-bold">Семейный бюджет</h1>
-              <p className="text-xs opacity-60">Обновлено: {new Date(data.updatedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
-            </div>
-            <button onClick={loadData} className="p-2 rounded-lg bg-white/10 active:scale-95 transition">
-              🔄
-            </button>
-          </div>
-
-          {/* Фильтр пользователей */}
-          <div className="flex gap-2 p-1 bg-white/5 rounded-xl">
-            <button 
-              onClick={() => setUserFilter("ALL")}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${userFilter === "ALL" ? "bg-blue-600 text-white shadow" : "opacity-70 hover:opacity-100"}`}
-            >
-              Все
-            </button>
-            {users.map(u => (
-              <button 
-                key={u}
-                onClick={() => setUserFilter(u)}
-                className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition truncate px-2 ${userFilter === u ? "bg-blue-600 text-white shadow" : "opacity-70 hover:opacity-100"}`}
-              >
-                {u.split(' ')[0]}
-              </button>
-            ))}
-          </div>
-
-          {/* Главные карточки */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="p-4 rounded-2xl bg-white/10 backdrop-blur-md">
-              <span className="text-xs opacity-70 block mb-1">Расходы за период</span>
-              <span className="text-2xl font-black text-rose-400">-{totalSpentEur.toFixed(2)} €</span>
-            </div>
-            <div className="p-4 rounded-2xl bg-white/10 backdrop-blur-md">
-              <span className="text-xs opacity-70 block mb-1">Все счета (~EUR)</span>
-              <span className="text-2xl font-black text-emerald-400">{totalBalanceEur.toFixed(2)} €</span>
-            </div>
-          </div>
-
-          {/* Балансы счетов */}
-          <div className="space-y-2">
-            <h2 className="text-sm font-semibold opacity-70 uppercase tracking-wider text-[11px]">Счета и кошельки</h2>
-            <div className="grid grid-cols-2 gap-2">
-              {data.accounts.map((acc, i) => (
-                <div key={i} className="p-3 rounded-xl bg-white/5 border border-white/5">
-                  <div className="text-xs font-medium opacity-80 truncate">{acc.name}</div>
-                  <div className="text-sm font-bold mt-1">
-                    {acc.balance.toLocaleString()} <span className="text-xs opacity-60 font-normal">{acc.currency}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Лента операций */}
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <h2 className="text-sm font-semibold opacity-70 uppercase tracking-wider text-[11px]">Последние операции</h2>
-              <span className="text-xs opacity-50">{filteredTx.length} зап.</span>
-            </div>
-            <div className="space-y-2">
-              {filteredTx.length === 0 ? (
-                <p className="text-xs opacity-50 py-4 text-center">Нет операций для выбранного фильтра</p>
-              ) : (
-                filteredTx.map((tx, idx) => {
-                  const isExpense = tx.type.toLowerCase().includes("расход") || tx.type.toLowerCase().includes("expense");
-                  return (
-                    <div key={idx} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-sm font-medium">{tx.category || "Без категории"}</span>
-                        <div className="flex items-center gap-1.5 text-xs opacity-60">
-                          <span>{tx.date}</span>
-                          {tx.merchant && <span>• {tx.merchant}</span>}
-                          {tx.user && <span className="text-blue-400">• {tx.user.split(' ')[0]}</span>}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className={`text-sm font-bold ${isExpense ? "text-rose-400" : "text-emerald-400"}`}>
-                          {isExpense ? "-" : "+"}{Math.abs(tx.amount).toLocaleString()} {tx.currency}
-                        </div>
-                        {tx.currency !== "EUR" && (
-                          <div className="text-[11px] opacity-50">
-                            ≈ {Math.abs(tx.amountEur).toFixed(2)} €
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-      );
+    function initTelegram() {
+      if (!tg) return;
+      try { tg.ready(); } catch (e) {}
+      try { tg.expand(); } catch (e) {}
+      try { tg.setHeaderColor('#0b0f19'); tg.setBackgroundColor('#0b0f19'); } catch (e) {}
+      try { if (tg.setBottomBarColor) tg.setBottomBarColor('#0b0f19'); } catch (e) {}
+      try { if (tg.isVersionAtLeast && tg.isVersionAtLeast('7.7') && tg.disableVerticalSwipes) tg.disableVerticalSwipes(); } catch (e) {}
+      try {
+        const mobile = ['ios', 'android', 'android_x'].indexOf(tg.platform) !== -1;
+        if (mobile && tg.isVersionAtLeast && tg.isVersionAtLeast('8.0') && tg.requestFullscreen) tg.requestFullscreen();
+      } catch (e) {}
     }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    async function fetchDashboard(month) {
+      if (CONFIG.API_URL.indexOf('ВСТАВЬТЕ') !== -1) throw new Error('В index.html не задан API_URL веб-приложения Apps Script.');
+      const initData = tg && tg.initData ? tg.initData : '';
+      if (!initData) throw new Error('Откройте приложение из Telegram — вне Telegram данные недоступны.');
+      const url = CONFIG.API_URL + '?action=dashboard&month=' + encodeURIComponent(month) +
+        '&initData=' + encodeURIComponent(initData) + '&_=' + Date.now();
+      const res = await fetch(url, { method: 'GET', redirect: 'follow' });
+      if (!res.ok) throw new Error('Сервер ответил HTTP ' + res.status);
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error || 'Ошибка API');
+      return j.data;
+    }
+
+    function aggregate(list) {
+      const map = {};
+      let total = 0;
+      list.forEach(t => {
+        const k = t.category || 'Без категории';
+        if (!map[k]) map[k] = { category: k, eur: 0, count: 0, items: [] };
+        map[k].eur += t.eur || 0;
+        map[k].count += 1;
+        map[k].items.push(t);
+        total += t.eur || 0;
+      });
+      const items = Object.keys(map).map(k => map[k]).sort((a, b) => b.eur - a.eur);
+      items.forEach((it, i) => {
+        it.color = PALETTE[i % PALETTE.length];
+        it.pct = total > 0 ? it.eur / total * 100 : 0;
+        it.items.sort((a, b) => (a.date < b.date ? 1 : -1));
+      });
+      return { items, total };
+    }
+
+    /* ============================== Компоненты ============================== */
+
+    function Segmented({ options, value, onChange, size }) {
+      const small = size === 'sm';
+      return html`
+        <div className=${'flex p-1 rounded-2xl bg-white/5 border border-white/5 ' + (small ? 'text-xs' : 'text-sm')}>
+          ${options.map(o => html`
+            <button key=${o.value}
+              onClick=${() => { if (o.value !== value) { haptic(); onChange(o.value); } }}
+              className=${'flex-1 rounded-xl transition-all duration-200 font-medium ' + (small ? 'py-1.5 px-2 ' : 'py-2 px-3 ') +
+                (o.value === value ? 'bg-white text-slate-900 shadow' : 'text-slate-400 active:bg-white/10')}>
+              ${o.label}
+            </button>`)}
+        </div>`;
+    }
+
+    function Card({ children, className }) {
+      return html`<div className=${'rounded-3xl bg-[#111827] border border-white/5 ' + (className || '')}>${children}</div>`;
+    }
+
+    function Donut({ items, total, label, currency }) {
+      const canvasRef = useRef(null);
+      const chartRef = useRef(null);
+
+      useEffect(() => {
+        const data = {
+          labels: items.map(i => i.category),
+          datasets: [{
+            data: items.map(i => Math.round(i.eur * 100) / 100),
+            backgroundColor: items.map(i => i.color),
+            borderColor: '#111827',
+            borderWidth: 3,
+            hoverOffset: 6,
+            borderRadius: 4
+          }]
+        };
+        if (!chartRef.current) {
+          chartRef.current = new Chart(canvasRef.current, {
+            type: 'doughnut',
+            data: data,
+            options: {
+              cutout: '74%',
+              responsive: true,
+              maintainAspectRatio: true,
+              animation: { animateRotate: true, duration: 700 },
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  backgroundColor: '#1f2937',
+                  borderColor: 'rgba(255,255,255,.08)',
+                  borderWidth: 1,
+                  padding: 10,
+                  callbacks: { label: ctx => ' ' + ctx.label + ': ' + money(ctx.parsed, 'EUR') }
+                }
+              }
+            }
+          });
+        } else {
+          chartRef.current.data = data;
+          chartRef.current.update();
+        }
+      }, [items]);
+
+      useEffect(() => () => {
+        if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+      }, []);
+
+      return html`
+        <div className="relative mx-auto w-full" style=${{ maxWidth: '250px' }}>
+          <canvas ref=${canvasRef}></canvas>
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <div className="text-[11px] uppercase tracking-wider text-slate-500">${label}</div>
+            <div className="text-2xl font-semibold num mt-0.5">${money(total, currency || 'EUR')}</div>
+          </div>
+        </div>`;
+    }
+
+    function Header({ month, setMonth, months, user, setUser, users, loading, onRefresh, showMonth }) {
+      const canNext = shiftMonth(month, 1) <= currentMonth();
+      const oldest = months && months.length ? months[months.length - 1] : '2000-01';
+      const canPrev = shiftMonth(month, -1) >= oldest;
+      const userOptions = [{ value: 'all', label: 'Все' }].concat(users.map(u => ({ value: u.id, label: u.name })));
+      return html`
+        <header className="sticky top-0 z-20 bg-[#0b0f19]/90 backdrop-blur-xl border-b border-white/5"
+          style=${{ paddingTop: 'var(--app-top)' }}>
+          <div className="px-4 pt-3 pb-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-[11px] uppercase tracking-widest text-slate-500">Beleda Budget</div>
+                <div className="text-lg font-semibold">Семейный бюджет</div>
+              </div>
+              <button onClick=${onRefresh} aria-label="Обновить"
+                className=${'w-10 h-10 rounded-2xl bg-white/5 border border-white/5 flex items-center justify-center active:scale-95 transition ' + (loading ? 'animate-spin' : '')}>
+                <span className="text-lg">↻</span>
+              </button>
+            </div>
+            ${showMonth && html`
+              <div className="flex items-center justify-between rounded-2xl bg-white/5 border border-white/5 px-2 py-1.5">
+                <button disabled=${!canPrev} onClick=${() => { haptic(); setMonth(shiftMonth(month, -1)); }}
+                  className="w-9 h-9 rounded-xl text-xl text-slate-300 disabled:opacity-20 active:bg-white/10">‹</button>
+                <div className="text-sm font-medium">${monthTitle(month)}${month === currentMonth() ? html`<span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-md bg-sky-500/15 text-sky-300 align-middle">текущий</span>` : null}</div>
+                <button disabled=${!canNext} onClick=${() => { haptic(); setMonth(shiftMonth(month, 1)); }}
+                  className="w-9 h-9 rounded-xl text-xl text-slate-300 disabled:opacity-20 active:bg-white/10">›</button>
+              </div>`}
+            <${Segmented} options=${userOptions} value=${user} onChange=${setUser} size="sm" />
+          </div>
+        </header>`;
+    }
+
+    function BottomNav({ tab, setTab }) {
+      const tabs = [
+        { id: 'accounts', icon: '💳', label: 'Счета' },
+        { id: 'expense', icon: '📉', label: 'Расходы' },
+        { id: 'income', icon: '📈', label: 'Доходы' },
+        { id: 'history', icon: '📜', label: 'История' }
+      ];
+      return html`
+        <nav className="fixed bottom-0 inset-x-0 z-30 bg-[#0b0f19]/95 backdrop-blur-xl border-t border-white/5"
+          style=${{ paddingBottom: 'var(--app-bottom)' }}>
+          <div className="grid grid-cols-4 px-2 pt-1.5 pb-2">
+            ${tabs.map(t => html`
+              <button key=${t.id} onClick=${() => { if (t.id !== tab) { haptic(); setTab(t.id); } }}
+                className="flex flex-col items-center gap-0.5 py-1.5 rounded-2xl active:bg-white/5 transition">
+                <span className=${'text-xl transition-transform duration-200 ' + (tab === t.id ? 'scale-110' : 'opacity-50 grayscale')}>${t.icon}</span>
+                <span className=${'text-[11px] font-medium ' + (tab === t.id ? 'text-white' : 'text-slate-500')}>${t.label}</span>
+                <span className=${'h-1 w-1 rounded-full transition-all ' + (tab === t.id ? 'bg-sky-400' : 'bg-transparent')}></span>
+              </button>`)}
+          </div>
+        </nav>`;
+    }
+
+    function AccountsTab({ data, currency, setCurrency, monthTx, month }) {
+      const rate = data.rates && data.rates[currency] ? data.rates[currency] : null;
+      const conv = eur => (eur === null || eur === undefined || !rate ? null : eur * rate);
+      const income = monthTx.filter(t => t.kind === 'income').reduce((s, t) => s + (t.eur || 0), 0);
+      const expense = monthTx.filter(t => t.kind === 'expense').reduce((s, t) => s + (t.eur || 0), 0);
+      const net = income - expense;
+      const maxEur = Math.max.apply(null, data.accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
+
+      return html`
+        <div className="space-y-4 fade-in">
+          <${Segmented} options=${CONFIG.CURRENCIES.map(c => ({ value: c, label: c }))} value=${currency} onChange=${setCurrency} />
+
+          <div className="rounded-3xl p-5 bg-gradient-to-br from-sky-500/20 via-indigo-500/10 to-transparent border border-white/10">
+            <div className="text-xs uppercase tracking-widest text-slate-400">Совокупный капитал · сейчас</div>
+            <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(data.capital.totalEur), currency) : 'нет курса'}</div>
+            <div className="grid grid-cols-2 gap-3 mt-4">
+              <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                <div className="text-[11px] text-slate-400">Счета</div>
+                <div className="text-sm font-medium num">${money(conv(data.capital.fiatEur), currency)}</div>
+              </div>
+              <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                <div className="text-[11px] text-slate-400">Крипто</div>
+                <div className="text-sm font-medium num">${money(conv(data.capital.cryptoEur), currency)}</div>
+              </div>
+            </div>
+            ${currency !== 'EUR' && rate ? html`<div className="text-[11px] text-slate-500 mt-3 num">1 € = ${fmt(rate, 4)} ${currency}</div>` : null}
+          </div>
+
+          <${Card} className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-sm font-medium">P&L · ${monthTitle(month)}</div>
+              <div className="text-[11px] text-slate-500">без обменов и сверок</div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-2xl bg-emerald-500/10 py-2.5">
+                <div className="text-[11px] text-emerald-300/80">Доходы</div>
+                <div className="text-sm font-semibold text-emerald-300 num">${signed(conv(income), currency)}</div>
+              </div>
+              <div className="rounded-2xl bg-rose-500/10 py-2.5">
+                <div className="text-[11px] text-rose-300/80">Расходы</div>
+                <div className="text-sm font-semibold text-rose-300 num">${signed(-conv(expense), currency)}</div>
+              </div>
+              <div className="rounded-2xl bg-white/5 py-2.5">
+                <div className="text-[11px] text-slate-400">Итог</div>
+                <div className=${'text-sm font-semibold num ' + (net >= 0 ? 'text-emerald-300' : 'text-rose-300')}>${signed(conv(net), currency)}</div>
+              </div>
+            </div>
+          <//>
+
+          <div>
+            <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Счета</div>
+            <${Card} className="divide-y divide-white/5 overflow-hidden">
+              ${data.accounts.map(a => html`
+                <div key=${a.name} className="px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">${a.name}</div>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300 font-semibold">${a.currency}</span>
+                        ${a.asOf ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300">сверка ${shortDate(a.asOf)}</span>` : null}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className=${'text-sm font-semibold num ' + (a.balance < 0 ? 'text-rose-300' : '')}>${money(a.balance, a.currency, a.currency === 'USDT' ? 2 : decFor(a.currency))}</div>
+                      ${a.currency !== currency && a.eur !== null ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(conv(a.eur), currency)}</div>` : null}
+                    </div>
+                  </div>
+                  <div className="h-1 rounded-full bg-white/5 mt-2 overflow-hidden">
+                    <div className="h-full rounded-full bg-sky-400/60 bar-fill" style=${{ width: Math.max(2, Math.abs(a.eur || 0) / maxEur * 100) + '%' }}></div>
+                  </div>
+                </div>`)}
+            <//>
+          </div>
+
+          ${data.crypto.length ? html`
+            <div>
+              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Крипто-позиции</div>
+              <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${data.crypto.map(c => html`
+                  <div key=${c.ticker} className="px-4 py-3 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold">${c.ticker}</div>
+                      <div className="text-[11px] text-slate-500 num">${fmt(c.qty, 6)} · вход $${fmt(c.avg, 4)}${c.price ? ' → $' + fmt(c.price, 4) : ''}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold num">${c.valueEur !== null ? money(conv(c.valueEur), currency) : '—'}</div>
+                      ${c.pnlUsd !== null ? html`<div className=${'text-[11px] num ' + (c.pnlUsd >= 0 ? 'text-emerald-300' : 'text-rose-300')}>${signed(c.pnlUsd, 'USD')} (${c.pnlPct >= 0 ? '+' : ''}${fmt(c.pnlPct, 1)}%)</div>` : null}
+                    </div>
+                  </div>`)}
+              <//>
+              ${data.cryptoError ? html`<div className="text-[11px] text-amber-300 mt-2 px-1">CoinGecko: ${data.cryptoError}</div>` : null}
+            </div>` : null}
+
+          ${data.fxStats.length ? html`
+            <div>
+              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Обмены · ${monthTitle(month)}</div>
+              <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${data.fxStats.map(s => {
+                  const quote = s.pair.split('/')[1];
+                  const base = s.pair.split('/')[0];
+                  const market = data.rates && data.rates[quote] && data.rates[base] ? data.rates[quote] / data.rates[base] : null;
+                  const dev = market && s.avgRate ? (s.avgRate / market - 1) * 100 : null;
+                  return html`
+                    <div key=${s.pair} className="px-4 py-3 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold">${s.pair}</div>
+                        <div className="text-[11px] text-slate-500 num">${s.count} обм. · ${fmt(s.baseAmt)} ${base} → ${fmt(s.quoteAmt)} ${quote}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold num">1 ${base} = ${fmt(s.avgRate, 4)}</div>
+                        <div className=${'text-[11px] num ' + (s.resultEur >= 0 ? 'text-emerald-300' : 'text-rose-300')}>
+                          ${signed(s.resultEur, 'EUR')}${dev !== null ? ' · ' + (dev >= 0 ? '+' : '') + fmt(dev, 2) + '% к рынку' : ''}
+                        </div>
+                      </div>
+                    </div>`;
+                })}
+              <//>
+            </div>` : null}
+
+          <div className="text-[11px] text-slate-600 text-center pb-2">Курсы: ${data.fxUpdated || '—'} · обновлено ${data.generatedAt}</div>
+        </div>`;
+    }
+
+    function CategoryTab({ kind, tx, budgets, showBudgets, month }) {
+      const [open, setOpen] = useState(null);
+      const agg = useMemo(() => aggregate(tx.filter(t => t.kind === kind)), [tx, kind]);
+      const budgetMap = useMemo(() => {
+        const m = {};
+        (budgets || []).forEach(b => { m[b.category.toLowerCase()] = b; });
+        return m;
+      }, [budgets]);
+      const isExp = kind === 'expense';
+
+      if (!agg.items.length) {
+        return html`
+          <div className="fade-in text-center py-16">
+            <div className="text-5xl mb-3">${isExp ? '🧾' : '💰'}</div>
+            <div className="text-slate-400 text-sm">${isExp ? 'Расходов' : 'Доходов'} за ${monthTitle(month).toLowerCase()} нет</div>
+          </div>`;
+      }
+
+      return html`
+        <div className="space-y-4 fade-in">
+          <${Card} className="p-5">
+            <${Donut} items=${agg.items} total=${agg.total} label=${isExp ? 'Расходы' : 'Доходы'} />
+            <div className="flex flex-wrap justify-center gap-x-3 gap-y-1.5 mt-4">
+              ${agg.items.slice(0, 8).map(i => html`
+                <div key=${i.category} className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <span className="w-2 h-2 rounded-full" style=${{ background: i.color }}></span>${i.category}
+                </div>`)}
+            </div>
+          <//>
+
+          <${Card} className="divide-y divide-white/5 overflow-hidden">
+            ${agg.items.map(i => {
+              const b = showBudgets && isExp ? budgetMap[i.category.toLowerCase()] : null;
+              const bp = b ? Math.min(100, b.spent / b.limit * 100) : 0;
+              const expanded = open === i.category;
+              return html`
+                <div key=${i.category}>
+                  <button className="w-full text-left px-4 py-3 active:bg-white/5 transition"
+                    onClick=${() => { haptic(); setOpen(expanded ? null : i.category); }}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style=${{ background: i.color }}></span>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">${i.category}</div>
+                          <div className="text-[11px] text-slate-500">${i.count} опер.</div>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-sm font-semibold num">${money(i.eur, 'EUR')}</div>
+                        <div className="text-[11px] text-slate-500 num">${fmt(i.pct, 1)}%</div>
+                      </div>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-white/5 mt-2.5 overflow-hidden">
+                      <div className="h-full rounded-full bar-fill" style=${{ width: Math.max(1.5, i.pct) + '%', background: i.color }}></div>
+                    </div>
+                    ${b ? html`
+                      <div className="flex items-center justify-between mt-2 text-[11px] num">
+                        <span className=${bp >= 100 ? 'text-rose-300' : bp >= 80 ? 'text-amber-300' : 'text-slate-500'}>
+                          Бюджет ${fmt(b.spent)} / ${fmt(b.limit)} €
+                        </span>
+                        <span className=${'px-1.5 py-0.5 rounded-md ' + (bp >= 100 ? 'bg-rose-500/15 text-rose-300' : bp >= 80 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/10 text-emerald-300')}>
+                          ${bp >= 100 ? 'превышен' : 'осталось ' + fmt(b.limit - b.spent) + ' €'}
+                        </span>
+                      </div>` : null}
+                  </button>
+                  ${expanded ? html`
+                    <div className="bg-black/20 px-4 py-2 fade-in">
+                      ${i.items.slice(0, 50).map(t => html`
+                        <div key=${t.id} className="flex items-center justify-between gap-3 py-2 border-b border-white/5 last:border-0">
+                          <div className="min-w-0">
+                            <div className="text-[13px] truncate">${t.merchant || i.category}</div>
+                            <div className="text-[11px] text-slate-500">${shortDate(t.date)} · ${t.user} · ${t.account}</div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="text-[13px] num">${money(t.amount, t.currency)}</div>
+                            ${t.currency !== 'EUR' ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(t.eur, 'EUR')}</div>` : null}
+                          </div>
+                        </div>`)}
+                    </div>` : null}
+                </div>`;
+            })}
+          <//>
+          ${!showBudgets && isExp ? html`<div className="text-[11px] text-slate-600 text-center">Лимиты бюджета показываются в режиме «Все»</div>` : null}
+        </div>`;
+    }
+
+    const KIND_META = {
+      expense: { label: 'Трата', icon: '🛒', badge: 'bg-rose-500/15 text-rose-300' },
+      income: { label: 'Доход', icon: '💰', badge: 'bg-emerald-500/15 text-emerald-300' },
+      transfer: { label: 'Перевод', icon: '💱', badge: 'bg-sky-500/15 text-sky-300' },
+      adjust: { label: 'Сверка', icon: '🧮', badge: 'bg-slate-500/20 text-slate-300' },
+      other: { label: 'Другое', icon: '•', badge: 'bg-slate-500/20 text-slate-300' }
+    };
+
+    function HistoryItem({ t }) {
+      const meta = KIND_META[t.kind] || KIND_META.other;
+      let title, sub, right, rightSub;
+      if (t.kind === 'transfer') {
+        const isFx = t.fromCur && t.toCur && t.fromCur !== t.toCur;
+        title = isFx ? (t.fromCur + ' → ' + t.toCur) : 'Перевод между счетами';
+        sub = (t.from || '—') + ' → ' + (t.to || '—') + (t.fxQuote ? ' · ' + t.fxQuote : '');
+        right = html`<div className="text-sm font-semibold num text-rose-300/90">−${money(t.fromAmt, t.fromCur)}</div>`;
+        rightSub = html`<div className="text-[11px] num text-emerald-300/90">+${money(t.toAmt, t.toCur)}</div>`;
+      } else {
+        title = t.kind === 'adjust' ? (t.account || 'Сверка остатка') : (t.merchant || t.category || '—');
+        sub = [t.kind !== 'adjust' ? t.category : 'Корректировка баланса', t.account].filter(Boolean).join(' · ');
+        const color = t.kind === 'expense' ? 'text-rose-300' : t.kind === 'income' ? 'text-emerald-300' : 'text-slate-200';
+        right = html`<div className=${'text-sm font-semibold num ' + color}>${signed(t.amount, t.currency)}</div>`;
+        rightSub = t.currency !== 'EUR' && t.eur !== null && t.eur !== undefined
+          ? html`<div className="text-[11px] text-slate-500 num">≈ ${signed(t.eur, 'EUR')}</div>` : null;
+      }
+      return html`
+        <div className="px-4 py-3 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-2xl bg-white/5 flex items-center justify-center text-base shrink-0">${meta.icon}</div>
+            <div className="min-w-0">
+              <div className="text-sm font-medium truncate">${title}</div>
+              <div className="text-[11px] text-slate-500 truncate">${sub}</div>
+              <div className="flex flex-wrap items-center gap-1 mt-1">
+                <span className=${'text-[10px] px-1.5 py-0.5 rounded-md ' + meta.badge}>${meta.label}</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/5 text-slate-400">${t.user || '—'}</span>
+                ${t.match === 'MERGED' ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/15 text-violet-300">🔗 сверено</span>` : null}
+                ${t.match === 'STATEMENT' ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-indigo-500/15 text-indigo-300">📑 выписка</span>` : null}
+              </div>
+            </div>
+          </div>
+          <div className="text-right shrink-0">${right}${rightSub}</div>
+        </div>`;
+    }
+
+    function HistoryTab({ history, user }) {
+      const [query, setQuery] = useState('');
+      const [kind, setKind] = useState('all');
+      const [limit, setLimit] = useState(80);
+
+      const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        return history.filter(t => {
+          if (user !== 'all' && t.userId !== user) return false;
+          if (kind !== 'all' && t.kind !== kind) return false;
+          if (!q) return true;
+          const hay = [t.merchant, t.category, t.account, t.from, t.to, t.user, t.currency, t.fromCur, t.toCur,
+            t.amount !== undefined ? String(Math.abs(t.amount)) : '', t.fromAmt !== undefined ? String(t.fromAmt) : '',
+            t.toAmt !== undefined ? String(t.toAmt) : ''].join(' ').toLowerCase();
+          return hay.indexOf(q) !== -1;
+        });
+      }, [history, user, kind, query]);
+
+      const groups = useMemo(() => {
+        const out = [];
+        let cur = null;
+        filtered.slice(0, limit).forEach(t => {
+          if (!cur || cur.date !== t.date) { cur = { date: t.date, items: [] }; out.push(cur); }
+          cur.items.push(t);
+        });
+        return out;
+      }, [filtered, limit]);
+
+      const kinds = [
+        { value: 'all', label: 'Все' }, { value: 'expense', label: 'Траты' }, { value: 'income', label: 'Доходы' },
+        { value: 'transfer', label: 'Обмены' }, { value: 'adjust', label: 'Сверки' }
+      ];
+
+      return html`
+        <div className="space-y-3 fade-in">
+          <div className="relative">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
+            <input value=${query} onChange=${e => { setQuery(e.target.value); setLimit(80); }}
+              placeholder="Магазин, категория, счёт, сумма…"
+              className="w-full rounded-2xl bg-white/5 border border-white/5 pl-10 pr-10 py-3 text-sm outline-none focus:border-sky-400/50 placeholder:text-slate-600" />
+            ${query ? html`<button onClick=${() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 w-6 h-6">✕</button>` : null}
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-4 px-4">
+            ${kinds.map(k => html`
+              <button key=${k.value} onClick=${() => { haptic(); setKind(k.value); setLimit(80); }}
+                className=${'shrink-0 text-xs px-3 py-1.5 rounded-full border transition ' +
+                  (kind === k.value ? 'bg-white text-slate-900 border-white' : 'bg-white/5 text-slate-400 border-white/5')}>
+                ${k.label}
+              </button>`)}
+          </div>
+
+          ${!groups.length ? html`<div className="text-center text-slate-500 text-sm py-14">Ничего не найдено</div>` : null}
+
+          ${groups.map(g => html`
+            <div key=${g.date}>
+              <div className="px-1 mb-1.5 mt-2 text-xs font-medium text-slate-500">${dayTitle(g.date)}</div>
+              <${Card} className="divide-y divide-white/5 overflow-hidden">
+                ${g.items.map(t => html`<${HistoryItem} key=${t.id} t=${t} />`)}
+              <//>
+            </div>`)}
+
+          ${filtered.length > limit ? html`
+            <button onClick=${() => setLimit(limit + 80)}
+              className="w-full py-3 rounded-2xl bg-white/5 border border-white/5 text-sm text-slate-300 active:bg-white/10">
+              Показать ещё (${filtered.length - limit})
+            </button>` : null}
+          <div className="text-[11px] text-slate-600 text-center pb-2">Показаны последние ${history.length} записей</div>
+        </div>`;
+    }
+
+    function Skeleton() {
+      return html`
+        <div className="space-y-4">
+          <div className="h-11 rounded-2xl skeleton"></div>
+          <div className="h-44 rounded-3xl skeleton"></div>
+          <div className="h-24 rounded-3xl skeleton"></div>
+          <div className="h-64 rounded-3xl skeleton"></div>
+        </div>`;
+    }
+
+    function ErrorBox({ message, onRetry }) {
+      return html`
+        <div className="fade-in text-center py-16 px-4">
+          <div className="text-5xl mb-4">⚠️</div>
+          <div className="text-sm text-slate-300 mb-5 leading-relaxed">${message}</div>
+          <button onClick=${onRetry} className="px-5 py-2.5 rounded-2xl bg-white text-slate-900 text-sm font-medium active:scale-95 transition">Повторить</button>
+        </div>`;
+    }
+
+    function App() {
+      const [month, setMonth] = useState(currentMonth());
+      const [user, setUser] = useState('all');
+      const [tab, setTab] = useState('accounts');
+      const [currency, setCurrency] = useState('EUR');
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState('');
+      const reqId = useRef(0);
+
+      const load = useCallback(async m => {
+        const id = ++reqId.current;
+        setLoading(true);
+        setError('');
+        try {
+          const d = await fetchDashboard(m);
+          if (id === reqId.current) setData(d);
+        } catch (e) {
+          if (id === reqId.current) setError(e && e.message ? e.message : String(e));
+        } finally {
+          if (id === reqId.current) setLoading(false);
+        }
+      }, []);
+
+      useEffect(() => { load(month); }, [month, load]);
+      useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }); }, [tab]);
+
+      const users = data && data.users && data.users.length ? data.users : CONFIG.FALLBACK_USERS;
+      const monthTx = useMemo(() => (data ? data.monthTx.filter(t => user === 'all' || t.userId === user) : []), [data, user]);
+
+      let content = null;
+      if (error && !data) content = html`<${ErrorBox} message=${error} onRetry=${() => load(month)} />`;
+      else if (!data) content = html`<${Skeleton} />`;
+      else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} />`;
+      else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" tx=${monthTx} budgets=${data.budgets} showBudgets=${user === 'all'} month=${month} />`;
+      else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" tx=${monthTx} budgets=${[]} showBudgets=${false} month=${month} />`;
+      else content = html`<${HistoryTab} history=${data.history} user=${user} />`;
+
+      return html`
+        <div className="min-h-screen">
+          <${Header} month=${month} setMonth=${setMonth} months=${data ? data.months : []} user=${user} setUser=${setUser}
+            users=${users} loading=${loading} onRefresh=${() => { haptic(); load(month); }} showMonth=${tab !== 'history'} />
+          <main className="px-4 pt-4" style=${{ paddingBottom: 'calc(96px + var(--app-bottom))' }}>
+            ${error && data ? html`<div className="mb-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-xs px-3 py-2">${error}</div>` : null}
+            <div className=${loading && data ? 'opacity-60 transition-opacity' : 'transition-opacity'}>${content}</div>
+          </main>
+          <${BottomNav} tab=${tab} setTab=${setTab} />
+        </div>`;
+    }
+
+    initTelegram();
+    ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);
+  })();
   </script>
 </body>
 </html>
