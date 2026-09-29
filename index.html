@@ -293,8 +293,10 @@
       const accounts = personal ? data.accounts.filter(a => accountOwner(a) === String(user)) : data.accounts;
       const cashEur = sumEur(accounts.filter(isCashAccount));
       const bankEur = sumEur(accounts.filter(a => !isCashAccount(a)));
-      const cryptoOwner = String(data.cryptoOwner || '408235862');
-      const cryptoEur = personal ? (String(user) === cryptoOwner ? data.capital.cryptoEur : 0) : data.capital.cryptoEur;
+      const userCap = (data.capitalByUser || {})[String(user)];
+      const cryptoEur = personal
+        ? (userCap ? userCap.cryptoEur || 0 : (String(user) === String(data.cryptoOwner || '408235862') ? data.capital.cryptoEur : 0))
+        : data.capital.cryptoEur;
       const byUser = data.capitalByUser && data.capitalByUser[String(user)];
       const personalTotal = byUser ? byUser.totalEur : cashEur + bankEur + cryptoEur;
       // «Все»: однотипные счета семьи (одно название без «(владельца)» и одна валюта) схлопываются в строку
@@ -468,17 +470,13 @@
 
     function CryptoTab({ data, user, users }) {
       const [showAll, setShowAll] = useState(false); // хук — до любого раннего return
-      const owner = String(data.cryptoOwner || '408235862');
-      if (user !== 'all' && String(user) !== owner) {
-        const ownerName = ((users || []).find(u => String(u.id) === owner) || {}).name || 'Stefan';
-        return html`
-          <div className="fade-in text-center py-16 px-6">
-            <div className="text-5xl mb-3 grayscale opacity-60">🪙</div>
-            <div className="text-slate-300 text-sm font-medium">Криптоактивов нет</div>
-            <div className="text-slate-500 text-xs mt-2 leading-relaxed">Весь крипто-портфель и стейблкоины закреплены за ${ownerName}.<br />Они не входят в личный капитал и видны в режимах «${ownerName}» и «Все».</div>
-          </div>`;
-      }
-      const c = data.crypto && !Array.isArray(data.crypto) ? data.crypto : { assets: [], closed: [], trades: [] };
+      // Крипта личная: у человека — его портфель (cryptoByUser), во «Все» — сводный отчёт семьи
+      const personal = user !== 'all';
+      const legacyOwner = String(data.cryptoOwner || '408235862');
+      let c = personal ? (data.cryptoByUser || {})[String(user)] : data.crypto;
+      if (!c && personal && String(user) === legacyOwner) c = data.crypto; // ответ старого бэкенда без cryptoByUser
+      c = c && !Array.isArray(c) ? c : { assets: [], closed: [], trades: [] };
+      const stableAccs = (data.accounts || []).filter(a => /^(USDT|USDC)$/.test(a.currency) && (!personal || accountOwner(a) === String(user)));
       const assets = c.assets || [];
       const closed = c.closed || [];
       const trades = c.trades || c.recentTrades || [];
@@ -490,9 +488,23 @@
 
       if (!assets.length && !trades.length) {
         return html`
-          <div className="fade-in text-center py-16 px-6">
-            <div className="text-5xl mb-3">🪙</div>
-            <div className="text-slate-400 text-sm leading-relaxed">Крипто-сделок пока нет.<br />Напишите боту, например: «купил 0.05 BTC по 64000» или пришлите скриншот свопа.</div>
+          <div className="fade-in space-y-4">
+            <div className="text-center pt-12 pb-4 px-6">
+              <div className="text-5xl mb-3">🪙</div>
+              <div className="text-slate-300 text-sm font-medium">Крипто-сделок пока нет</div>
+              <div className="text-slate-500 text-xs mt-2 leading-relaxed">Напишите боту: «купил 0.05 BTC по 64000» или пришлите скриншот свопа.<br />Счёт биржи или кошелька: <span className="text-slate-300">/addaccount Биржа HTX USDT 121.72</span></div>
+            </div>
+            ${stableAccs.length ? html`
+              <div>
+                <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Стейблкоины на счетах</div>
+                <${Card} className="divide-y divide-white/5 overflow-hidden">
+                  ${stableAccs.map(a => html`
+                    <div key=${a.name} className="px-4 py-3 flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium truncate">${personal ? accountLabel(a) : a.name}</div>
+                      <div className="text-sm font-semibold num">${fmt(a.balance, 2)} ${a.currency}</div>
+                    </div>`)}
+                <//>
+              </div>` : null}
           </div>`;
       }
 
@@ -883,7 +895,7 @@
             ${error && data ? html`<div className="mb-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-xs px-3 py-2">${error}</div>` : null}
             <div className=${loading && data ? 'opacity-60 transition-opacity' : 'transition-opacity'}>${content}</div>
           </main>
-          <${BottomNav} tab=${tab} setTab=${setTab} muted=${user !== 'all' && data && String(user) !== String(data.cryptoOwner || '408235862') ? ['crypto'] : []} />
+          <${BottomNav} tab=${tab} setTab=${setTab} muted=${[]} />
         </div>`;
     }
 
