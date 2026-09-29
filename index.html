@@ -297,12 +297,27 @@
       const cryptoEur = personal ? (String(user) === cryptoOwner ? data.capital.cryptoEur : 0) : data.capital.cryptoEur;
       const byUser = data.capitalByUser && data.capitalByUser[String(user)];
       const personalTotal = byUser ? byUser.totalEur : cashEur + bankEur + cryptoEur;
-      const orphans = personal ? [] : data.accounts.filter(a => !accountOwner(a));
+      // «Все»: однотипные счета семьи (одно название без «(владельца)» и одна валюта) схлопываются в строку
+      const FAMILY_ORDER = ['наличные eur', 'наличные rsd', 'банк рф rub', 'freedom usd', 'freedom eur', 'сербский банк rsd', 'крипто-кошелек usdt'];
+      const family = [];
+      if (!personal) {
+        const byKey = {};
+        data.accounts.forEach(a => {
+          const label = accountLabel(a);
+          const k = label.toLowerCase() + '|' + a.currency;
+          let g = byKey[k];
+          if (!g) { g = byKey[k] = { name: label, currency: a.currency, balance: 0, eur: 0, eurKnown: true, asOf: '', parts: [] }; family.push(g); }
+          g.balance += a.balance || 0;
+          if (a.eur === null || a.eur === undefined) g.eurKnown = false; else g.eur += a.eur;
+          g.parts.push({ who: nameOf(accountOwner(a)) || 'без владельца', balance: a.balance });
+        });
+        family.forEach(g => { g.balance = Math.round(g.balance * 1e8) / 1e8; if (!g.eurKnown) g.eur = null; });
+        const rank = g => { const i = FAMILY_ORDER.indexOf(g.name.toLowerCase()); return i === -1 ? FAMILY_ORDER.length : i; };
+        family.sort((x, y) => rank(x) - rank(y));
+      }
       const groups = personal
         ? [{ key: String(user), title: 'Счета · ' + userName, items: accounts }]
-        : (users || []).map(u => ({ key: String(u.id), title: 'Счета · ' + u.name, items: data.accounts.filter(a => accountOwner(a) === String(u.id)) }))
-          .concat([{ key: 'orphans', title: '⚠️ Без владельца — запустите миграцию', items: orphans }])
-          .filter(g => g.items.length);
+        : [{ key: 'family', title: 'Счета семьи', items: family }].filter(g => g.items.length);
 
       const maxEur = Math.max.apply(null, accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
       const negative = accounts.filter(a => a.balance < 0);
@@ -390,6 +405,9 @@
                         <div className="text-sm font-medium truncate">${accountLabel(a)}</div>
                         <div className="flex flex-wrap items-center gap-1.5 mt-1">
                           <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300 font-semibold">${a.currency}</span>
+                          ${a.parts ? html`<span className="text-[11px] text-slate-500 num">${a.parts.length > 1
+                            ? a.parts.map(p => p.who + ': ' + money(p.balance, a.currency, a.currency === 'USDT' ? 2 : decFor(a.currency))).join(' · ')
+                            : '👤 ' + a.parts[0].who}</span>` : null}
                           ${a.asOf ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300">сверка ${shortDate(a.asOf)}</span>` : null}
                           ${a.balance < 0 ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-500/20 text-rose-300 font-medium">требуется сверка/пополнение</span>` : null}
                         </div>
