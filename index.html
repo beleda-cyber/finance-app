@@ -82,6 +82,13 @@
       return p[2] + ' ' + MONTHS_GEN[p[1] - 1] + (p[0] !== new Date().getFullYear() ? ' ' + p[0] : '') + ', ' + WEEKDAYS[d.getDay()];
     }
     function shortDate(iso) { const p = String(iso).split('-'); return p.length === 3 ? p[2] + '.' + p[1] : iso; }
+    function matchUser(t, user) {
+      if (user === 'all') return true;
+      if (String(t.userId) === String(user)) return true;
+      if (user === '408235862' && /stefan|beleda|беледа/i.test(t.user)) return true;
+      if (user === '676401561' && /(мари|маша|maria|mariia|vasiutcheva)/i.test(t.user)) return true;
+      return false;
+    }
     function haptic() { try { if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); } catch (e) {} }
 
     function initTelegram() {
@@ -268,6 +275,8 @@
       const expense = monthTx.filter(t => t.kind === 'expense').reduce((s, t) => s + (t.eur || 0), 0);
       const net = income - expense;
       const maxEur = Math.max.apply(null, data.accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
+      const negative = data.accounts.filter(a => a.balance < 0);
+      const negativeEur = negative.reduce((s, a) => s + (a.eur || 0), 0);
 
       return html`
         <div className="space-y-4 fade-in">
@@ -287,6 +296,12 @@
               </div>
             </div>
             ${currency !== 'EUR' && rate ? html`<div className="text-[11px] text-slate-500 mt-3 num">1 € = ${fmt(rate, 4)} ${currency}</div>` : null}
+            ${negative.length ? html`
+              <div className="mt-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-[11px] text-rose-200 leading-relaxed">
+                ⚠️ ${negative.length === 1 ? 'Счёт' : 'Счета'} в минусе: ${negative.map(a => a.name).join(', ')}.
+                Минус уменьшает капитал на <span className="num font-semibold">${money(Math.abs(conv(negativeEur) || 0), currency)}</span>.
+                Если это не долг — проведите сверку остатка или задайте начальный баланс.
+              </div>` : null}
           </div>
 
           <${Card} className="p-4">
@@ -321,6 +336,7 @@
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300 font-semibold">${a.currency}</span>
                         ${a.asOf ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300">сверка ${shortDate(a.asOf)}</span>` : null}
+                        ${a.balance < 0 ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-500/20 text-rose-300 font-medium">требуется сверка/пополнение</span>` : null}
                       </div>
                     </div>
                     <div className="text-right shrink-0">
@@ -329,7 +345,7 @@
                     </div>
                   </div>
                   <div className="h-1 rounded-full bg-white/5 mt-2 overflow-hidden">
-                    <div className="h-full rounded-full bg-sky-400/60 bar-fill" style=${{ width: Math.max(2, Math.abs(a.eur || 0) / maxEur * 100) + '%' }}></div>
+                    <div className=${'h-full rounded-full bar-fill ' + (a.balance < 0 ? 'bg-rose-400/70' : 'bg-sky-400/60')} style=${{ width: Math.max(2, Math.abs(a.eur || 0) / maxEur * 100) + '%' }}></div>
                   </div>
                 </div>`)}
             <//>
@@ -487,9 +503,16 @@
         sub = (t.from || '—') + ' → ' + (t.to || '—') + (t.fxQuote ? ' · ' + t.fxQuote : '');
         right = html`<div className="text-sm font-semibold num text-rose-300/90">−${money(t.fromAmt, t.fromCur)}</div>`;
         rightSub = html`<div className="text-[11px] num text-emerald-300/90">+${money(t.toAmt, t.toCur)}</div>`;
+      } else if (t.kind === 'adjust') {
+        const hasFact = t.fact !== null && t.fact !== undefined;
+        const delta = t.delta !== undefined ? t.delta : t.amount;
+        title = hasFact ? 'Сверка остатка: зафиксировано ' + money(t.fact, t.currency) : 'Сверка остатка';
+        sub = (t.account || '—') + ' · корректировка Δ ' + signed(delta, t.currency);
+        right = hasFact ? html`<div className="text-sm font-semibold num text-slate-200">${money(t.fact, t.currency)}</div>` : null;
+        rightSub = html`<div className="text-[11px] text-slate-500 num">Δ ${signed(delta, t.currency)}</div>`;
       } else {
-        title = t.kind === 'adjust' ? (t.account || 'Сверка остатка') : (t.merchant || t.category || '—');
-        sub = [t.kind !== 'adjust' ? t.category : 'Корректировка баланса', t.account].filter(Boolean).join(' · ');
+        title = t.merchant || t.category || '—';
+        sub = [t.category, t.account].filter(Boolean).join(' · ');
         const color = t.kind === 'expense' ? 'text-rose-300' : t.kind === 'income' ? 'text-emerald-300' : 'text-slate-200';
         right = html`<div className=${'text-sm font-semibold num ' + color}>${signed(t.amount, t.currency)}</div>`;
         rightSub = t.currency !== 'EUR' && t.eur !== null && t.eur !== undefined
@@ -522,7 +545,7 @@
       const filtered = useMemo(() => {
         const q = query.trim().toLowerCase();
         return history.filter(t => {
-          if (user !== 'all' && t.userId !== user) return false;
+          if (!matchUser(t, user)) return false;
           if (kind !== 'all' && t.kind !== kind) return false;
           if (!q) return true;
           const hay = [t.merchant, t.category, t.account, t.from, t.to, t.user, t.currency, t.fromCur, t.toCur,
@@ -631,7 +654,10 @@
       useEffect(() => { window.scrollTo({ top: 0, behavior: 'smooth' }); }, [tab]);
 
       const users = data && data.users && data.users.length ? data.users : CONFIG.FALLBACK_USERS;
-      const monthTx = useMemo(() => (data ? data.monthTx.filter(t => user === 'all' || t.userId === user) : []), [data, user]);
+      const monthTx = useMemo(() => {
+        if (!data) return [];
+        return data.monthTx.filter(t => matchUser(t, user));
+      }, [data, user]);
 
       let content = null;
       if (error && !data) content = html`<${ErrorBox} message=${error} onRetry=${() => load(month)} />`;
