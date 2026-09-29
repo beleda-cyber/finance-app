@@ -89,6 +89,14 @@
       if (user === '676401561' && /(мари|маша|maria|mariia|vasiutcheva)/i.test(t.user)) return true;
       return false;
     }
+    function accountOwner(a) {
+      if (a.owner) return String(a.owner);
+      const m = String(a.name || '').match(/\(([^)]+)\)\s*$/);
+      if (!m) return '';
+      if (/stefan|beleda|беледа/i.test(m[1])) return '408235862';
+      if (/(мари|маша|maria|mariia)/i.test(m[1])) return '676401561';
+      return '';
+    }
     function haptic() { try { if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); } catch (e) {} }
 
     function initTelegram() {
@@ -268,14 +276,24 @@
         </nav>`;
     }
 
-    function AccountsTab({ data, currency, setCurrency, monthTx, month }) {
+    function AccountsTab({ data, currency, setCurrency, monthTx, month, user, users }) {
       const rate = data.rates && data.rates[currency] ? data.rates[currency] : null;
       const conv = eur => (eur === null || eur === undefined || !rate ? null : eur * rate);
       const income = monthTx.filter(t => t.kind === 'income').reduce((s, t) => s + (t.eur || 0), 0);
       const expense = monthTx.filter(t => t.kind === 'expense').reduce((s, t) => s + (t.eur || 0), 0);
       const net = income - expense;
-      const maxEur = Math.max.apply(null, data.accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
-      const negative = data.accounts.filter(a => a.balance < 0);
+
+      const personal = user !== 'all';
+      const userName = personal ? ((users || []).find(u => String(u.id) === String(user)) || {}).name || '' : '';
+      const nameOf = id => ((users || []).find(u => String(u.id) === String(id)) || {}).name || '';
+      const accounts = personal ? data.accounts.filter(a => { const o = accountOwner(a); return !o || o === String(user); }) : data.accounts;
+      const hidden = personal ? data.accounts.filter(a => { const o = accountOwner(a); return o && o !== String(user); }) : [];
+      const sumEur = list => list.reduce((s, a) => s + (a.eur || 0), 0);
+      const ownEur = sumEur(accounts.filter(a => accountOwner(a) === String(user)));
+      const familyEur = sumEur(accounts.filter(a => !accountOwner(a)));
+
+      const maxEur = Math.max.apply(null, accounts.map(a => Math.abs(a.eur || 0)).concat([1]));
+      const negative = accounts.filter(a => a.balance < 0);
       const negativeEur = negative.reduce((s, a) => s + (a.eur || 0), 0);
 
       return html`
@@ -283,18 +301,34 @@
           <${Segmented} options=${CONFIG.CURRENCIES.map(c => ({ value: c, label: c }))} value=${currency} onChange=${setCurrency} />
 
           <div className="rounded-3xl p-5 bg-gradient-to-br from-sky-500/20 via-indigo-500/10 to-transparent border border-white/10">
-            <div className="text-xs uppercase tracking-widest text-slate-400">Совокупный капитал · сейчас</div>
-            <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(data.capital.totalEur), currency) : 'нет курса'}</div>
-            <div className="grid grid-cols-2 gap-3 mt-4">
-              <div className="rounded-2xl bg-black/20 px-3 py-2.5">
-                <div className="text-[11px] text-slate-400">Счета</div>
-                <div className="text-sm font-medium num">${money(conv(data.capital.fiatEur), currency)}</div>
+            ${personal ? html`
+              <div className="text-xs uppercase tracking-widest text-slate-400">${userName} · личные + семейные счета</div>
+              <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(ownEur + familyEur), currency) : 'нет курса'}</div>
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Личные</div>
+                  <div className="text-sm font-medium num">${money(conv(ownEur), currency)}</div>
+                </div>
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Семейные</div>
+                  <div className="text-sm font-medium num">${money(conv(familyEur), currency)}</div>
+                </div>
               </div>
-              <div className="rounded-2xl bg-black/20 px-3 py-2.5">
-                <div className="text-[11px] text-slate-400">Крипто</div>
-                <div className="text-sm font-medium num">${money(conv(data.capital.cryptoEur), currency)}</div>
+              <div className="text-[11px] text-slate-400 mt-3 num">Капитал семьи: ${money(conv(data.capital.totalEur), currency)}</div>
+            ` : html`
+              <div className="text-xs uppercase tracking-widest text-slate-400">Капитал семьи · сейчас</div>
+              <div className="text-4xl font-semibold num mt-2 tracking-tight">${rate ? money(conv(data.capital.totalEur), currency) : 'нет курса'}</div>
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Счета</div>
+                  <div className="text-sm font-medium num">${money(conv(data.capital.fiatEur), currency)}</div>
+                </div>
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Крипто</div>
+                  <div className="text-sm font-medium num">${money(conv(data.capital.cryptoEur), currency)}</div>
+                </div>
               </div>
-            </div>
+            `}
             ${currency !== 'EUR' && rate ? html`<div className="text-[11px] text-slate-500 mt-3 num">1 € = ${fmt(rate, 4)} ${currency}</div>` : null}
             ${negative.length ? html`
               <div className="mt-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 px-3 py-2 text-[11px] text-rose-200 leading-relaxed">
@@ -328,13 +362,16 @@
           <div>
             <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Счета</div>
             <${Card} className="divide-y divide-white/5 overflow-hidden">
-              ${data.accounts.map(a => html`
+              ${accounts.map(a => html`
                 <div key=${a.name} className="px-4 py-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-medium truncate">${a.name}</div>
-                      <div className="flex items-center gap-1.5 mt-1">
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
                         <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10 text-slate-300 font-semibold">${a.currency}</span>
+                        ${accountOwner(a)
+                          ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/15 text-violet-300">👤 ${nameOf(accountOwner(a)) || 'личный'}</span>`
+                          : html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-sky-500/10 text-sky-300">👪 семейный</span>`}
                         ${a.asOf ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300">сверка ${shortDate(a.asOf)}</span>` : null}
                         ${a.balance < 0 ? html`<span className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-500/20 text-rose-300 font-medium">требуется сверка/пополнение</span>` : null}
                       </div>
@@ -349,6 +386,10 @@
                   </div>
                 </div>`)}
             <//>
+            ${hidden.length ? html`
+              <div className="text-[11px] text-slate-500 mt-2 px-1 num">
+                ${'Скрыты личные кошельки (' + (nameOf(accountOwner(hidden[0])) || 'другой член семьи') + '): ' + hidden.length + ' · ≈ ' + money(conv(sumEur(hidden)), currency) + ' — видны в режиме «Все»'}
+              </div>` : null}
           </div>
 
           ${data.crypto.length ? html`
@@ -662,7 +703,7 @@
       let content = null;
       if (error && !data) content = html`<${ErrorBox} message=${error} onRetry=${() => load(month)} />`;
       else if (!data) content = html`<${Skeleton} />`;
-      else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} />`;
+      else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} />`;
       else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" tx=${monthTx} budgets=${data.budgets} showBudgets=${user === 'all'} month=${month} />`;
       else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" tx=${monthTx} budgets=${[]} showBudgets=${false} month=${month} />`;
       else content = html`<${HistoryTab} history=${data.history} user=${user} />`;
