@@ -603,7 +603,7 @@
                 </button>` : null}
             </div>` : null}
 
-          <div className="text-[11px] text-slate-600 text-center pb-2">Цены: CoinGecko · метод средней цены (WAC) · всё в USD/USDT · ${data.generatedAt}</div>
+          <div className="text-[11px] text-slate-600 text-center pb-2">Цены: ${c.priceSource || '—'} · метод средней цены (WAC) · всё в USD/USDT · ${data.generatedAt}</div>
         </div>`;
     }
 
