@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Семейный Бюджет</title>
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React & ReactDOM CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel для запуска JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    body {
+      background-color: var(--tg-theme-bg-color, #0f172a);
+      color: var(--tg-theme-text-color, #f8fafc);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+  </style>
+</head>
+<body class="p-4 pb-12">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const API_URL = "https://script.google.com/macros/s/AKfycbzpGbFsakhdjlQohuK5yEtYxnStjmTIkoxYi0Z51h5kmyqXAPzUoZ2DhvngBldOX9LTLQ/exec?action=getData";
+
+    function App() {
+      const [data, setData] = React.useState(null);
+      const [loading, setLoading] = React.useState(true);
+      const [userFilter, setUserFilter] = React.useState("ALL");
+
+      const loadData = () => {
+        setLoading(true);
+        fetch(API_URL)
+          .then(res => res.json())
+          .then(res => {
+            if (res.ok) setData(res);
+            setLoading(false);
+          })
+          .catch(err => {
+            console.error(err);
+            setLoading(false);
+          });
+      };
+
+      React.useEffect(() => {
+        if (window.Telegram && window.Telegram.WebApp) {
+          window.Telegram.WebApp.ready();
+          window.Telegram.WebApp.expand();
+        }
+        loadData();
+      }, []);
+
+      if (loading) {
+        return (
+          <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
+            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-sm opacity-70">Синхронизация с таблицей...</p>
+          </div>
+        );
+      }
+
+      if (!data) {
+        return (
+          <div className="text-center py-10">
+            <p className="text-red-400 mb-3">Не удалось загрузить данные</p>
+            <button onClick={loadData} className="px-4 py-2 bg-blue-600 rounded-lg text-sm font-medium">Повторить</button>
+          </div>
+        );
+      }
+
+      // Список уникальных пользователей
+      const users = Array.from(new Set(data.transactions.map(t => t.user).filter(Boolean)));
+      
+      // Фильтрация транзакций
+      const filteredTx = data.transactions.filter(t => {
+        if (userFilter === "ALL") return true;
+        return t.user === userFilter;
+      });
+
+      // Расчет суммы расходов
+      const totalSpentEur = filteredTx
+        .filter(t => t.type.toLowerCase().includes("расход") || t.type.toLowerCase().includes("expense"))
+        .reduce((sum, t) => sum + Math.abs(t.amountEur || 0), 0);
+
+      // Общий баланс всех счетов
+      const totalBalanceEur = data.accounts.reduce((sum, a) => sum + (a.balanceEur || 0), 0);
+
+      return (
+        <div className="max-w-md mx-auto space-y-5">
+          {/* Верхняя панель */}
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-xl font-bold">Семейный бюджет</h1>
+              <p className="text-xs opacity-60">Обновлено: {new Date(data.updatedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+            </div>
+            <button onClick={loadData} className="p-2 rounded-lg bg-white/10 active:scale-95 transition">
+              🔄
+            </button>
+          </div>
+
+          {/* Фильтр пользователей */}
+          <div className="flex gap-2 p-1 bg-white/5 rounded-xl">
+            <button 
+              onClick={() => setUserFilter("ALL")}
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${userFilter === "ALL" ? "bg-blue-600 text-white shadow" : "opacity-70 hover:opacity-100"}`}
+            >
+              Все
+            </button>
+            {users.map(u => (
+              <button 
+                key={u}
+                onClick={() => setUserFilter(u)}
+                className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition truncate px-2 ${userFilter === u ? "bg-blue-600 text-white shadow" : "opacity-70 hover:opacity-100"}`}
+              >
+                {u.split(' ')[0]}
+              </button>
+            ))}
+          </div>
+
+          {/* Главные карточки */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="p-4 rounded-2xl bg-white/10 backdrop-blur-md">
+              <span className="text-xs opacity-70 block mb-1">Расходы за период</span>
+              <span className="text-2xl font-black text-rose-400">-{totalSpentEur.toFixed(2)} €</span>
+            </div>
+            <div className="p-4 rounded-2xl bg-white/10 backdrop-blur-md">
+              <span className="text-xs opacity-70 block mb-1">Все счета (~EUR)</span>
+              <span className="text-2xl font-black text-emerald-400">{totalBalanceEur.toFixed(2)} €</span>
+            </div>
+          </div>
+
+          {/* Балансы счетов */}
+          <div className="space-y-2">
+            <h2 className="text-sm font-semibold opacity-70 uppercase tracking-wider text-[11px]">Счета и кошельки</h2>
+            <div className="grid grid-cols-2 gap-2">
+              {data.accounts.map((acc, i) => (
+                <div key={i} className="p-3 rounded-xl bg-white/5 border border-white/5">
+                  <div className="text-xs font-medium opacity-80 truncate">{acc.name}</div>
+                  <div className="text-sm font-bold mt-1">
+                    {acc.balance.toLocaleString()} <span className="text-xs opacity-60 font-normal">{acc.currency}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Лента операций */}
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <h2 className="text-sm font-semibold opacity-70 uppercase tracking-wider text-[11px]">Последние операции</h2>
+              <span className="text-xs opacity-50">{filteredTx.length} зап.</span>
+            </div>
+            <div className="space-y-2">
+              {filteredTx.length === 0 ? (
+                <p className="text-xs opacity-50 py-4 text-center">Нет операций для выбранного фильтра</p>
+              ) : (
+                filteredTx.map((tx, idx) => {
+                  const isExpense = tx.type.toLowerCase().includes("расход") || tx.type.toLowerCase().includes("expense");
+                  return (
+                    <div key={idx} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-sm font-medium">{tx.category || "Без категории"}</span>
+                        <div className="flex items-center gap-1.5 text-xs opacity-60">
+                          <span>{tx.date}</span>
+                          {tx.merchant && <span>• {tx.merchant}</span>}
+                          {tx.user && <span className="text-blue-400">• {tx.user.split(' ')[0]}</span>}
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`text-sm font-bold ${isExpense ? "text-rose-400" : "text-emerald-400"}`}>
+                          {isExpense ? "-" : "+"}{Math.abs(tx.amount).toLocaleString()} {tx.currency}
+                        </div>
+                        {tx.currency !== "EUR" && (
+                          <div className="text-[11px] opacity-50">
+                            ≈ {Math.abs(tx.amountEur).toFixed(2)} €
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
