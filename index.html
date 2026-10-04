@@ -565,7 +565,7 @@
             </div>`)}
           ${hiddenZero ? html`<div className="text-[11px] text-slate-600 text-center">Счета с нулевым балансом скрыты · ⚙️ Настройки</div>` : null}
 
-          ${data.fxStats.length ? html`
+          ${data.fx ? html`<${FxPanel} fx=${data.fx} user=${user} rates=${data.rates} />` : data.fxStats.length ? html`
             <div>
               <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Обмены · ${monthTitle(month)}</div>
               <${Card} className="divide-y divide-white/5 overflow-hidden">
@@ -592,6 +592,151 @@
             </div>` : null}
 
           <div className="text-[11px] text-slate-600 text-center pb-2">Курсы: ${data.fxUpdated || '—'} · обновлено ${data.generatedAt}</div>
+        </div>`;
+    }
+
+    /* ======================= 💱 Активы и валютный рынок (FX) =======================
+     * Данные — data.fx с бэкенда: сделки обмена (без рублей) с рыночным курсом на дату записи и готовые
+     * метрики VWAP по владельцу × паре × периоду. Здесь только выбор пары/периода и графики Chart.js.
+     */
+    const FX_TABS = [{ value: 'EUR_RSD', label: 'EUR / RSD' }, { value: 'USD_RSD', label: 'USD / RSD' }, { value: 'EUR_USD', label: 'EUR / USD' }, { value: 'USDT', label: 'USDT / Фиат' }];
+    const FX_PERIODS = [{ value: '1M', label: '1 мес' }, { value: '3M', label: '3 мес' }, { value: 'ALL', label: 'Всё время' }];
+    const FX_DAYS = { '1M': 30, '3M': 90, 'ALL': null };
+
+    function rateDec(v) { return v >= 20 ? 2 : 4; }
+    function tsOf(iso) { return Date.parse(iso + 'T12:00:00'); }
+    function ddmm(ts) { const d = new Date(ts); return pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1); }
+
+    /** Chart.js в контейнере фиксированной высоты: ширина всегда = ширине карточки (390px без скролла). */
+    function ChartBox({ config, height }) {
+      const ref = useRef(null);
+      const chart = useRef(null);
+      useEffect(() => {
+        if (chart.current) chart.current.destroy();
+        chart.current = new Chart(ref.current, config);
+        return () => { if (chart.current) { chart.current.destroy(); chart.current = null; } };
+      }, [config]);
+      return html`<div className="relative w-full" style=${{ height: (height || 180) + 'px' }}><canvas ref=${ref}></canvas></div>`;
+    }
+
+    function FxPanel({ fx, user, rates }) {
+      const scope = user === 'all' ? 'all' : String(user);
+      const stats = (fx.stats && (fx.stats[scope] || fx.stats.all)) || {};
+      const mine = useMemo(() => (fx.deals || []).filter(d => scope === 'all' || d.userId === scope), [fx, scope]);
+      const has = id => mine.some(d => d.pair === id);
+      const firstTab = (FX_TABS.find(t => (t.value === 'USDT' ? has('USDT_RSD') || has('USDT_EUR') : has(t.value))) || FX_TABS[0]).value;
+      const [tab, setTab] = useState(firstTab);
+      const [period, setPeriod] = useState('3M');
+      const [usdtQuote, setUsdtQuote] = useState(has('USDT_RSD') || !has('USDT_EUR') ? 'RSD' : 'EUR');
+      useEffect(() => { setTab(firstTab); }, [scope]);
+      const pairId = tab === 'USDT' ? 'USDT_' + usdtQuote : tab;
+      const meta = (fx.pairs || []).find(p => p.id === pairId) || { base: 'EUR', quote: 'RSD' };
+      const s = (stats[pairId] || {})[period] || {};
+      const main = s.main, rev = s.reverse;
+      const from = FX_DAYS[period] ? addDaysIso(localToday(), -FX_DAYS[period]) : '';
+      const deals = mine.filter(d => d.pair === pairId && d.date >= from);
+      const rb = rateOf(meta.base, rates), rq = rateOf(meta.quote, rates);
+      const marketNow = rb && rq ? rq / rb : null;
+
+      const scatter = useMemo(() => {
+        if (!deals.length) return null;
+        const maxBase = Math.max.apply(null, deals.map(d => d.baseAmt));
+        const pt = d => ({ x: tsOf(d.date), y: d.rate, r: 4 + 10 * Math.sqrt(d.baseAmt / maxBase), d: d });
+        const market = deals.filter(d => d.market).map(d => ({ x: tsOf(d.date), y: d.market }));
+        if (marketNow) market.push({ x: Date.now(), y: marketNow });
+        market.sort((a, b) => a.x - b.x);
+        const xs = deals.map(d => tsOf(d.date)).concat(market.map(p => p.x));
+        const pad = Math.max(2 * 864e5, (Math.max.apply(null, xs) - Math.min.apply(null, xs)) * 0.04);
+        const xMin = Math.min.apply(null, xs) - pad, xMax = Math.max.apply(null, xs) + pad;
+        return {
+          type: 'bubble',
+          data: { datasets: [
+            { type: 'line', label: 'Курс системы', data: market, borderColor: 'rgba(148,163,184,.8)', backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.35, borderDash: [4, 3], order: 2 },
+            { label: 'Обмен ' + meta.base + ' → ' + meta.quote, data: deals.filter(d => d.dir === 'main').map(pt), backgroundColor: 'rgba(56,189,248,.55)', borderColor: '#38bdf8', borderWidth: 1, order: 1 },
+            { label: meta.quote + ' → ' + meta.base, data: deals.filter(d => d.dir === 'reverse').map(pt), backgroundColor: 'rgba(251,191,36,.55)', borderColor: '#fbbf24', borderWidth: 1, order: 1 }
+          ] },
+          options: {
+            responsive: true, maintainAspectRatio: false, animation: { duration: 500 },
+            layout: { padding: { top: 14, right: 8 } },
+            scales: {
+              x: { type: 'linear', min: xMin, max: xMax, ticks: { color: '#64748b', maxTicksLimit: 5, callback: v => ddmm(v), font: { size: 10 } }, grid: { color: 'rgba(255,255,255,.04)' } },
+              y: { ticks: { color: '#64748b', maxTicksLimit: 5, font: { size: 10 }, callback: v => fmt(v, rateDec(v)) }, grid: { color: 'rgba(255,255,255,.05)' }, grace: '8%' }
+            },
+            plugins: {
+              legend: { display: true, labels: { color: '#94a3b8', boxWidth: 8, boxHeight: 8, usePointStyle: true, font: { size: 10 } } },
+              tooltip: { backgroundColor: '#1f2937', callbacks: { label: ctx => {
+                const d = ctx.raw.d;
+                if (!d) return ' Курс системы: ' + fmt(ctx.parsed.y, rateDec(ctx.parsed.y));
+                return [' ' + shortDate(d.date) + ' · ' + d.user + (d.p2p ? ' · P2P' : ''), ' ' + fmt(d.baseAmt, 2) + ' ' + d.base + ' ⇄ ' + fmt(d.quoteAmt, 2) + ' ' + d.quote,
+                  ' курс ' + fmt(d.rate, rateDec(d.rate)) + (d.market ? ' · рынок ' + fmt(d.market, rateDec(d.market)) : '')];
+              } } }
+            }
+          }
+        };
+      }, [deals.map(d => d.id).join(','), marketNow, pairId]);
+
+      const bars = useMemo(() => {
+        const byMonth = {};
+        deals.filter(d => d.dir === 'main').forEach(d => { const m = d.date.slice(0, 7); byMonth[m] = (byMonth[m] || 0) + d.quoteAmt; });
+        const months = Object.keys(byMonth).sort();
+        if (!months.length) return null;
+        return {
+          type: 'bar',
+          data: { labels: months.map(m => MONTHS[Number(m.slice(5)) - 1].slice(0, 3) + ' ' + m.slice(2, 4)), datasets: [{ data: months.map(m => Math.round(byMonth[m] * 100) / 100), backgroundColor: 'rgba(52,211,153,.55)', borderColor: '#34d399', borderWidth: 1, borderRadius: 6, maxBarThickness: 36 }] },
+          options: {
+            responsive: true, maintainAspectRatio: false, animation: { duration: 500 },
+            scales: { x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { display: false } }, y: { ticks: { color: '#64748b', maxTicksLimit: 4, font: { size: 10 }, callback: v => fmt(v, 0) }, grid: { color: 'rgba(255,255,255,.05)' } } },
+            plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1f2937', callbacks: { label: ctx => ' Куплено ' + money(ctx.parsed.y, meta.quote) } } }
+          }
+        };
+      }, [deals.map(d => d.id).join(','), pairId]);
+
+      if (!mine.length) return null;
+      const tone = v => (v === null || v === undefined ? 'text-slate-300' : v >= 0 ? 'text-emerald-300' : 'text-rose-300');
+      return html`
+        <div>
+          <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">💱 Активы и валютный рынок (FX)</div>
+          <${Card} className="p-4 space-y-3">
+            <div className="filter-chips-scroll -mx-4">
+              ${FX_TABS.map(t => html`<button key=${t.value} onClick=${() => { if (t.value !== tab) { haptic(); setTab(t.value); } }}
+                className=${'sf-chip' + (tab === t.value ? ' sf-chip-active' : '') + (t.value === 'USDT' ? (has('USDT_RSD') || has('USDT_EUR') ? '' : ' opacity-40') : has(t.value) ? '' : ' opacity-40')}>${t.label}</button>`)}
+            </div>
+            <${Segmented} options=${FX_PERIODS} value=${period} onChange=${setPeriod} size="sm" />
+            ${tab === 'USDT' ? html`<${Segmented} options=${[{ value: 'RSD', label: 'USDT → RSD' }, { value: 'EUR', label: 'USDT → EUR' }]} value=${usdtQuote} onChange=${setUsdtQuote} size="sm" />` : null}
+
+            ${!main && !rev ? html`<div className="text-center text-sm text-slate-500 py-6">Обменов ${meta.base} → ${meta.quote} за период нет</div>` : html`
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Средний курс (VWAP)</div>
+                  <div className="text-sm font-semibold num">${main ? fmt(main.vwap, rateDec(main.vwap)) + ' ' + meta.quote : '—'}</div>
+                  <div className="text-[10px] text-slate-500 num">за 1 ${meta.base}${main ? ' · ' + main.count + ' сд.' : ''}</div>
+                </div>
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Куплено</div>
+                  <div className="text-sm font-semibold num">${main ? money(main.quoteAmt, meta.quote) : '—'}</div>
+                  <div className="text-[10px] text-slate-500 num">${main ? 'отдано ' + money(main.baseAmt, meta.base) : ''}</div>
+                </div>
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Спред к рынку</div>
+                  <div className=${'text-sm font-semibold num ' + tone(main && main.spreadPct)}>${main && main.spreadPct !== null ? (main.spreadPct >= 0 ? '+' : '') + fmt(main.spreadPct, 2) + '%' : '—'}</div>
+                  <div className=${'text-[10px] num ' + tone(main && main.resultQuote)}>${main && main.resultQuote !== null ? signed(main.resultQuote, meta.quote) + ' к рынку' : 'нет курса на дату'}</div>
+                </div>
+                <div className="rounded-2xl bg-black/20 px-3 py-2.5">
+                  <div className="text-[11px] text-slate-400">Диапазон сделок</div>
+                  <div className="text-sm font-semibold num">${main ? fmt(main.worst, rateDec(main.worst)) + ' – ' + fmt(main.best, rateDec(main.best)) : '—'}</div>
+                  <div className="text-[10px] text-slate-500 num">${marketNow ? 'рынок сейчас ' + fmt(marketNow, rateDec(marketNow)) : ''}</div>
+                </div>
+              </div>
+              ${rev ? html`<div className="text-[11px] text-slate-400 num leading-relaxed">Обратно ${meta.quote} → ${meta.base}: ${rev.count} сд. · ${money(rev.quoteAmt, meta.quote)} → ${money(rev.baseAmt, meta.base)} · VWAP ${fmt(rev.vwap, rateDec(rev.vwap))}${rev.spreadPct !== null ? html` · <span className=${tone(rev.spreadPct)}>${(rev.spreadPct >= 0 ? '+' : '') + fmt(rev.spreadPct, 2)}% к рынку</span>` : ''}</div>` : null}
+              ${scatter ? html`<${ChartBox} config=${scatter} height=${190} />` : null}
+              ${bars ? html`
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-1">Закупка ${meta.quote} по месяцам</div>
+                  <${ChartBox} config=${bars} height=${130} />
+                </div>` : null}
+            `}
+            <div className="text-[10px] text-slate-600 leading-snug">Спред — к курсу системы на дату записи сделки; «+» — выгоднее рынка. Размер точки — объём сделки. Рубли в модуль не входят.</div>
+          <//>
         </div>`;
     }
 
