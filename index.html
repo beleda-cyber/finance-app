@@ -807,7 +807,40 @@
         </div>`;
     }
 
-    function CategoryTab({ kind, pool, user, month, filter, setFilter, budgets, showBudgets, periodFrom, baseCurrency, rates }) {
+    /** Курс валюты к EUR из ответа API (стейблкоины = USD). */
+    function rateOf(cur, rates) {
+      if (cur === 'EUR') return 1;
+      const c = cur === 'USDT' || cur === 'USDC' ? 'USD' : cur;
+      return rates && rates[c] ? rates[c] : null;
+    }
+    function convAmount(v, from, to, rates) {
+      if (from === to) return v;
+      const a = rateOf(from, rates), b = rateOf(to, rates);
+      return a && b ? v / a * b : null;
+    }
+
+    /**
+     * Месячные лимиты (Limits, Period=MONTH) для выбранного месяца: факт считается на клиенте из операций
+     * в валюте лимита по курсу системы. «Все» — семейные лимиты; человек — его личные лимиты.
+     */
+    function monthLimitMap(limits, pool, range, user, users, rates) {
+      const name = user === 'all' ? 'FAMILY' : ((users || []).find(u => String(u.id) === String(user)) || {}).name;
+      const out = {};
+      (limits || []).filter(l => l.period === 'MONTH' && l.scope === name).forEach(l => {
+        const cat = l.category.toLowerCase();
+        let spent = 0;
+        pool.forEach(t => {
+          if (t.kind !== 'expense' || (t.category || '').toLowerCase() !== cat || t.date < range.from || t.date > range.to) return;
+          if (user !== 'all' && !matchUser(t, user)) return;
+          const v = convAmount(t.amount || 0, t.currency, l.currency, rates);
+          spent += v !== null ? v : (convAmount(t.eur || 0, 'EUR', l.currency, rates) || 0);
+        });
+        out[cat] = { category: l.category, amount: l.amount, currency: l.currency, spent: Math.round(spent * 100) / 100 };
+      });
+      return out;
+    }
+
+    function CategoryTab({ kind, pool, user, month, filter, setFilter, budgets, showBudgets, periodFrom, baseCurrency, rates, limits, users }) {
       const f = filter || SMART_DEFAULT;
       const [open, setOpen] = useState(null);
       const [sheet, setSheet] = useState(false);
@@ -826,8 +859,11 @@
         (budgets || []).forEach(b => { m[b.category.toLowerCase()] = b; });
         return m;
       }, [budgets]);
-      // Месячные лимиты — только для «1 мес» во «Все валюты» (лимиты заданы в EUR на календарный месяц)
-      const budgetsOn = showBudgets && isExp && f.periodPreset === '1M' && f.currency === 'ALL';
+      // Месячные лимиты из листа Limits (мультивалютные) — для «1 мес» во «Все валюты». Лимит по категории
+      // заменяет старую строку Budgets (только EUR, только «Все»), дублей нет.
+      const limitsOn = isExp && f.periodPreset === '1M' && f.currency === 'ALL';
+      const limitMap = useMemo(() => (limitsOn ? monthLimitMap(limits, pool, range, user, users, rates) : {}), [limitsOn, limits, pool, range, user, users, rates]);
+      const budgetsOn = limitsOn && (showBudgets || Object.keys(limitMap).length > 0);
       const beforeWindow = periodFrom && range.from < periodFrom && f.periodPreset === 'CUSTOM';
       useEffect(() => { setOpen(null); setLimit(30); }, [f, user]);
 
@@ -865,8 +901,11 @@
 
             <${Card} className="divide-y divide-white/5 overflow-hidden">
               ${agg.items.map(i => {
-                const b = budgetsOn ? budgetMap[i.category.toLowerCase()] : null;
+                const lim = limitsOn ? limitMap[i.category.toLowerCase()] : null;
+                const b = !lim && limitsOn && showBudgets ? budgetMap[i.category.toLowerCase()] : null;
                 const bp = b ? Math.min(100, b.spent / b.limit * 100) : 0;
+                const lt = lim ? limitTone(lim.spent, lim.amount) : null;
+                const toBase = v => convAmount(v, lim.currency, base, rates);
                 const expanded = open === i.category;
                 return html`
                   <div key=${i.category}>
@@ -895,6 +934,16 @@
                             ${bp >= 100 ? 'превышен' : 'осталось ' + fmt(b.limit - b.spent) + ' €'}
                           </span>
                         </div>` : null}
+                      ${lim ? html`
+                        <div className="mt-2">
+                          <div className="h-1 rounded-full bg-white/5 overflow-hidden">
+                            <div className=${'h-full rounded-full bar-fill ' + lt.bar} style=${{ width: Math.max(2, Math.min(100, lt.pct)) + '%' }}></div>
+                          </div>
+                          <div className="flex items-center justify-between mt-1.5 text-[11px] num gap-2">
+                            <span className=${lt.text}>Лимит ${money(lim.spent, lim.currency)} / ${money(lim.amount, lim.currency)}${lim.currency !== base && toBase(lim.amount) !== null ? ' (≈ ' + money(toBase(lim.spent), base) + ' / ' + money(toBase(lim.amount), base) + ')' : ''}</span>
+                            <span className=${'px-1.5 py-0.5 rounded-md shrink-0 ' + lt.badge}>${fmt(lt.pct, 0)}%</span>
+                          </div>
+                        </div>` : null}
                     </button>
                     ${expanded ? html`
                       <div className="bg-black/20 px-4 py-2 fade-in">
@@ -903,7 +952,7 @@
                   </div>`;
               })}
             <//>
-            ${isExp && !budgetsOn ? html`<div className="text-[11px] text-slate-600 text-center">${showBudgets ? 'Лимиты бюджета показываются для «1 мес» во «Все валюты»' : 'Лимиты бюджета показываются в режиме «Все»'}</div>` : null}
+            ${isExp && !limitsOn ? html`<div className="text-[11px] text-slate-600 text-center">Месячные лимиты показываются для «1 мес» во «Все валюты»</div>` : null}
 
             <div>
               <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Операции</div>
@@ -1352,7 +1401,8 @@
       else if (!data) content = html`<${Skeleton} />`;
       else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${pickCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} setTab=${setTab} hideZero=${settings.hideZero} />`;
       else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" pool=${pool} user=${user} month=${month} periodFrom=${data.periodFrom}
-        filter=${smartFilter.expense} setFilter=${setTabFilter('expense')} budgets=${data.budgets} showBudgets=${user === 'all'} baseCurrency=${settings.baseCurrency} rates=${data.rates} />`;
+        filter=${smartFilter.expense} setFilter=${setTabFilter('expense')} budgets=${data.budgets} showBudgets=${user === 'all'} baseCurrency=${settings.baseCurrency} rates=${data.rates}
+        limits=${data.limits || []} users=${users} />`;
       else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" pool=${pool} user=${user} month=${month} periodFrom=${data.periodFrom}
         filter=${smartFilter.income} setFilter=${setTabFilter('income')} budgets=${[]} showBudgets=${false} baseCurrency=${settings.baseCurrency} rates=${data.rates} />`;
       else if (tab === 'crypto') content = html`<${CryptoTab} data=${data} user=${user} users=${users} />`;
