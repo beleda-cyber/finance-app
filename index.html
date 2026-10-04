@@ -25,6 +25,21 @@
     .bar-fill { transition: width .6s cubic-bezier(.2,.8,.2,1); }
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { scrollbar-width: none; }
+    /* Умный фильтр: горизонтальный скролл чипов не перехватывается свайпами Telegram */
+    .filter-chips-scroll { display: flex; gap: 6px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; -ms-overflow-style: none;
+      -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-x; padding: 4px 16px; }
+    .filter-chips-scroll::-webkit-scrollbar { display: none; }
+    .sf-chip { flex: 0 0 auto; padding: 6px 12px; border-radius: 11px; font-size: 12px; font-weight: 500; color: #94a3b8;
+      background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.06); transition: background .15s, color .15s, border-color .15s; }
+    .sf-chip:active { transform: scale(.97); }
+    .sf-chip-active { color: #0b0f19; background: #38bdf8; border-color: #38bdf8; font-weight: 600; }
+    .sf-backdrop { animation: sfFade .2s ease-out both; }
+    .sf-sheet { animation: sfUp .26s cubic-bezier(.2,.8,.2,1) both; }
+    @keyframes sfFade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes sfUp { from { transform: translateY(100%); } to { transform: none; } }
+    .sf-date { display: block; width: 100%; margin-top: 4px; padding: 10px 12px; border-radius: 12px; color: #e5e7eb; background: #0b0f19;
+      border: 1px solid rgba(255,255,255,.1); color-scheme: dark; font-size: 15px; outline: none; }
+    .sf-date:focus { border-color: rgba(56,189,248,.6); }
     .skeleton { background: linear-gradient(90deg, #111827 0%, #1f2937 50%, #111827 100%); background-size: 200% 100%; animation: shimmer 1.2s infinite linear; }
     @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
   </style>
@@ -114,6 +129,20 @@
       } catch (e) {}
     }
 
+    /** Запись из Mini App: doPost?action=… (text/plain — без CORS-preflight, подпись initData в теле). */
+    async function apiPost(action, payload) {
+      const initData = tg && tg.initData ? tg.initData : '';
+      if (!initData) throw new Error('Откройте приложение из Telegram — вне Telegram сохранение недоступно.');
+      const res = await fetch(CONFIG.API_URL + '?action=' + encodeURIComponent(action), {
+        method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ initData: initData }, payload || {}))
+      });
+      if (!res.ok) throw new Error('Сервер ответил HTTP ' + res.status);
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error || 'Ошибка API');
+      return j;
+    }
+
     async function fetchDashboard(month) {
       if (CONFIG.API_URL.indexOf('ВСТАВЬТЕ') !== -1) throw new Error('В index.html не задан API_URL веб-приложения Apps Script.');
       const initData = tg && tg.initData ? tg.initData : '';
@@ -147,6 +176,89 @@
       return { items, total };
     }
 
+    /* ============================ Умный фильтр: логика ============================
+     * Только клиент: фильтрует уже загруженные операции (data.monthTx ∪ data.periodTx) без запросов.
+     * Видимость = владелец (Все/Stefan/Мария) И валюта И период И тип «Расход»/«Доход».
+     * Переводы, сверки и крипто-сделки в эти массивы бэкенд не кладёт, но тип всё равно проверяется.
+     * Балансы, капитал и вкладку «Счета» фильтр не трогает.
+     */
+    const SMART_CURRENCIES = ['ALL', 'EUR', 'RSD', 'RUB', 'USD', 'USDT'];
+    const SMART_PRESETS = [
+      { id: '1D', label: '1 день' }, { id: '1W', label: '1 нед' }, { id: '2W', label: '2 нед' },
+      { id: '1M', label: '1 мес' }, { id: 'CUSTOM', label: '📅 Период' }
+    ];
+    const SMART_DEFAULT = { currency: 'ALL', periodPreset: '1M', customFrom: null, customTo: null };
+
+    function isoOf(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+    function addDaysIso(iso, n) { const p = iso.split('-').map(Number); return isoOf(new Date(p[0], p[1] - 1, p[2] + n)); }
+    function monthEndIso(month) { const p = month.split('-').map(Number); return isoOf(new Date(p[0], p[1], 0)); }
+    function dm(iso) { const p = iso.split('-'); return p[2] + '.' + p[1]; }
+
+    /** Границы периода включительно: { from, to, label }. «1 мес» — месяц, выбранный в шапке (как P&L). */
+    function smartRange(f, month, today) {
+      const t = today || localToday();
+      switch (f.periodPreset) {
+        case '1D': return { from: t, to: t, label: 'Сегодня' };
+        case '1W': return { from: addDaysIso(t, -6), to: t, label: '7 дней · ' + dm(addDaysIso(t, -6)) + '–' + dm(t) };
+        case '2W': return { from: addDaysIso(t, -13), to: t, label: '14 дней · ' + dm(addDaysIso(t, -13)) + '–' + dm(t) };
+        case 'CUSTOM': {
+          let a = f.customFrom || t, b = f.customTo || t;
+          if (a > b) { const x = a; a = b; b = x; }
+          return { from: a, to: b, label: dm(a) + (a.slice(0, 4) !== t.slice(0, 4) ? '.' + a.slice(0, 4) : '') + ' – ' + dm(b) + (b.slice(0, 4) !== t.slice(0, 4) ? '.' + b.slice(0, 4) : '') };
+        }
+        default: return { from: month + '-01', to: monthEndIso(month), label: monthTitle(month) };
+      }
+    }
+
+    /** Все операции «Расход»/«Доход» из ответа API без дублей (месяц из шапки + окно periodTx). */
+    function pnlPool(data) {
+      const seen = {};
+      const out = [];
+      [].concat(data.periodTx || [], data.monthTx || []).forEach(t => { if (!seen[t.id]) { seen[t.id] = 1; out.push(t); } });
+      return out;
+    }
+
+    /** Строгий AND: тип И владелец И валюта И дата. Новые сверху. */
+    function smartFilterTx(pool, kind, f, user, range) {
+      return pool.filter(t =>
+        t.kind === kind &&
+        matchUser(t, user) &&
+        (f.currency === 'ALL' || t.currency === f.currency) &&
+        t.date >= range.from && t.date <= range.to
+      ).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    }
+
+    /** Сумма для отображения: «Все валюты» — в базовой валюте по курсу системы (allRate = курс EUR→база, по умолчанию EUR), конкретная валюта — точные суммы в ней. */
+    function smartValue(t, currency, allRate) { return currency === 'ALL' ? (t.eur || 0) * (allRate || 1) : (t.amount || 0); }
+
+    /** Итог и расшифровка по реальным валютам операций. */
+    function smartTotals(list, currency, allRate) {
+      const by = {};
+      let total = 0;
+      list.forEach(t => { total += smartValue(t, currency, allRate); by[t.currency] = (by[t.currency] || 0) + (t.amount || 0); });
+      const byCurrency = Object.keys(by).map(c => ({ currency: c, amount: by[c] })).sort((a, b) => b.amount - a.amount);
+      return { total: total, byCurrency: byCurrency, count: list.length };
+    }
+
+    /** Категории по убыванию: в EUR («Все валюты») или строго в выбранной валюте. */
+    function smartCategories(list, currency, allRate) {
+      const map = {};
+      let total = 0;
+      list.forEach(t => {
+        const k = t.category || 'Без категории';
+        const v = smartValue(t, currency, allRate);
+        if (!map[k]) map[k] = { category: k, value: 0, eur: 0, count: 0, items: [] };
+        map[k].value += v;
+        map[k].eur += t.eur || 0;
+        map[k].count += 1;
+        map[k].items.push(t);
+        total += v;
+      });
+      const items = Object.keys(map).map(k => map[k]).sort((a, b) => b.value - a.value);
+      items.forEach((it, i) => { it.color = PALETTE[i % PALETTE.length]; it.pct = total > 0 ? it.value / total * 100 : 0; });
+      return { items: items, total: total };
+    }
+
     /* ============================== Компоненты ============================== */
 
     function Segmented({ options, value, onChange, size }) {
@@ -170,12 +282,14 @@
     function Donut({ items, total, label, currency }) {
       const canvasRef = useRef(null);
       const chartRef = useRef(null);
+      const curRef = useRef(currency || 'EUR');
+      curRef.current = currency || 'EUR';
 
       useEffect(() => {
         const data = {
           labels: items.map(i => i.category),
           datasets: [{
-            data: items.map(i => Math.round(i.eur * 100) / 100),
+            data: items.map(i => Math.round((i.value !== undefined ? i.value : i.eur) * 100) / 100),
             backgroundColor: items.map(i => i.color),
             borderColor: '#111827',
             borderWidth: 3,
@@ -199,7 +313,7 @@
                   borderColor: 'rgba(255,255,255,.08)',
                   borderWidth: 1,
                   padding: 10,
-                  callbacks: { label: ctx => ' ' + ctx.label + ': ' + money(ctx.parsed, 'EUR') }
+                  callbacks: { label: ctx => ' ' + ctx.label + ': ' + money(ctx.parsed, curRef.current) }
                 }
               }
             }
@@ -224,7 +338,7 @@
         </div>`;
     }
 
-    function Header({ month, setMonth, months, user, setUser, users, loading, onRefresh, showMonth }) {
+    function Header({ month, setMonth, months, user, setUser, users, loading, onRefresh, showMonth, showUsers }) {
       const canNext = shiftMonth(month, 1) <= currentMonth();
       const oldest = months && months.length ? months[months.length - 1] : '2000-01';
       const canPrev = shiftMonth(month, -1) >= oldest;
@@ -251,7 +365,7 @@
                 <button disabled=${!canNext} onClick=${() => { haptic(); setMonth(shiftMonth(month, 1)); }}
                   className="w-9 h-9 rounded-xl text-xl text-slate-300 disabled:opacity-20 active:bg-white/10">›</button>
               </div>`}
-            <${Segmented} options=${userOptions} value=${user} onChange=${setUser} size="sm" />
+            ${showUsers !== false ? html`<${Segmented} options=${userOptions} value=${user} onChange=${setUser} size="sm" />` : null}
           </div>
         </header>`;
     }
@@ -262,24 +376,25 @@
         { id: 'expense', icon: '📉', label: 'Расходы' },
         { id: 'income', icon: '📈', label: 'Доходы' },
         { id: 'crypto', icon: '🪙', label: 'Крипта' },
-        { id: 'history', icon: '📜', label: 'История' }
+        { id: 'history', icon: '📜', label: 'История' },
+        { id: 'settings', icon: '⚙️', label: 'Настройки' }
       ];
       return html`
         <nav className="fixed bottom-0 inset-x-0 z-30 bg-[#0b0f19]/95 backdrop-blur-xl border-t border-white/5"
           style=${{ paddingBottom: 'var(--app-bottom)' }}>
-          <div className="grid grid-cols-5 px-1 pt-1.5 pb-2">
+          <div className="grid grid-cols-6 px-0.5 pt-1.5 pb-2">
             ${tabs.map(t => html`
               <button key=${t.id} onClick=${() => { if (t.id !== tab) { haptic(); setTab(t.id); } }}
                 className="flex flex-col items-center gap-0.5 py-1.5 rounded-2xl active:bg-white/5 transition">
                 <span className=${'text-xl transition-transform duration-200 ' + (tab === t.id ? 'scale-110' : 'opacity-50 grayscale') + ((muted || []).indexOf(t.id) !== -1 ? ' opacity-20' : '')}>${t.icon}</span>
-                <span className=${'text-[11px] font-medium ' + (tab === t.id ? 'text-white' : 'text-slate-500')}>${t.label}</span>
+                <span className=${'text-[10px] font-medium max-w-full truncate px-0.5 ' + (tab === t.id ? 'text-white' : 'text-slate-500')}>${t.label}</span>
                 <span className=${'h-1 w-1 rounded-full transition-all ' + (tab === t.id ? 'bg-sky-400' : 'bg-transparent')}></span>
               </button>`)}
           </div>
         </nav>`;
     }
 
-    function AccountsTab({ data, currency, setCurrency, monthTx, month, user, users, setTab }) {
+    function AccountsTab({ data, currency, setCurrency, monthTx, month, user, users, setTab, hideZero }) {
       const rate = data.rates && data.rates[currency] ? data.rates[currency] : null;
       const conv = eur => (eur === null || eur === undefined || !rate ? null : eur * rate);
       const income = monthTx.filter(t => t.kind === 'income').reduce((s, t) => s + (t.eur || 0), 0);
@@ -317,8 +432,11 @@
         const rank = g => { const i = FAMILY_ORDER.indexOf(g.name.toLowerCase()); return i === -1 ? FAMILY_ORDER.length : i; };
         family.sort((x, y) => rank(x) - rank(y));
       }
-      // Стейблкоин-счета с нулём/пылью (< 0.01) в списке не показываем — в капитал они входят как и раньше
-      const visible = a => !(/^(USDT|USDC)$/.test(a.currency) && Math.abs(a.balance || 0) < 0.01);
+      // «Скрывать счета с нулевым балансом» (⚙️ Настройки, по умолчанию вкл.): нули и пыль (< 0.01) не показываем —
+      // в капитал они входят как и раньше. Выключено — видны все счета, кроме пустых стейблкоин-счетов.
+      const isZero = a => Math.abs(a.balance || 0) < 0.01;
+      const visible = a => !(isZero(a) && (hideZero !== false || /^(USDT|USDC)$/.test(a.currency)));
+      const hiddenZero = hideZero !== false && accounts.some(isZero);
       // Крипто-портфель профиля — отдельной карточкой в списке, чтобы сумма карточек сходилась с шапкой
       const cryptoRep = personal ? ((data.cryptoByUser || {})[String(user)] || (!data.cryptoByUser && String(user) === String(data.cryptoOwner || '408235862') ? data.crypto : null)) : data.crypto;
       const cryptoAssets = cryptoRep && Array.isArray(cryptoRep.assets) ? cryptoRep.assets.filter(a => a.holdings > 0) : [];
@@ -445,6 +563,7 @@
                   </div>`)}
               <//>
             </div>`)}
+          ${hiddenZero ? html`<div className="text-[11px] text-slate-600 text-center">Счета с нулевым балансом скрыты · ⚙️ Настройки</div>` : null}
 
           ${data.fxStats.length ? html`
             <div>
@@ -639,89 +758,181 @@
         </div>`;
     }
 
-    function CategoryTab({ kind, tx, budgets, showBudgets, month }) {
+    /* ============================ Умный фильтр: интерфейс ============================ */
+
+    function SmartFilterBar({ f, onChange, onOpenPeriod, range }) {
+      const chip = (active, label, onClick, key) => html`
+        <button key=${key} onClick=${onClick} className=${'sf-chip' + (active ? ' sf-chip-active' : '')}>${label}</button>`;
+      return html`
+        <div className="-mx-4 space-y-1">
+          <div className="filter-chips-scroll">
+            ${SMART_CURRENCIES.map(c => chip(f.currency === c, c === 'ALL' ? 'Все валюты' : c,
+              () => { if (f.currency !== c) { haptic(); onChange(Object.assign({}, f, { currency: c })); } }, 'c' + c))}
+          </div>
+          <div className="filter-chips-scroll">
+            ${SMART_PRESETS.map(p => chip(f.periodPreset === p.id,
+              p.id === 'CUSTOM' && f.periodPreset === 'CUSTOM' ? '📅 ' + range.label : p.label,
+              () => { haptic(); if (p.id === 'CUSTOM') onOpenPeriod(); else if (f.periodPreset !== p.id) onChange(Object.assign({}, f, { periodPreset: p.id })); }, 'p' + p.id))}
+          </div>
+        </div>`;
+    }
+
+    function PeriodSheet({ f, range, onApply, onReset, onClose }) {
+      const today = localToday();
+      const [from, setFrom] = useState(f.customFrom || (range.from > today ? today : range.from));
+      const [to, setTo] = useState(f.customTo || (range.to > today ? today : range.to));
+      return html`
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true">
+          <div className="sf-backdrop absolute inset-0 bg-black/60" onClick=${onClose}></div>
+          <div className="sf-sheet absolute inset-x-0 bottom-0 rounded-t-3xl bg-[#111827] border-t border-white/10 px-5 pt-3"
+            style=${{ paddingBottom: 'calc(20px + var(--app-bottom))' }}>
+            <div className="mx-auto h-1 w-10 rounded-full bg-white/15 mb-4"></div>
+            <div className="text-base font-semibold mb-4">Выберите период</div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="text-[11px] text-slate-400">С</span>
+                <input type="date" className="sf-date" value=${from} max=${today} onChange=${e => setFrom(e.target.value)} />
+              </label>
+              <label className="block">
+                <span className="text-[11px] text-slate-400">По</span>
+                <input type="date" className="sf-date" value=${to} max=${today} onChange=${e => setTo(e.target.value)} />
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-5">
+              <button onClick=${() => { haptic(); onReset(); }} className="py-3 rounded-2xl bg-white/5 border border-white/10 text-sm text-slate-300 active:bg-white/10">Сбросить</button>
+              <button disabled=${!from || !to} onClick=${() => { haptic(); onApply(from, to); }}
+                className="py-3 rounded-2xl bg-sky-400 text-slate-900 text-sm font-semibold active:scale-[.98] transition disabled:opacity-40">Применить</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function CategoryTab({ kind, pool, user, month, filter, setFilter, budgets, showBudgets, periodFrom, baseCurrency, rates }) {
+      const f = filter || SMART_DEFAULT;
       const [open, setOpen] = useState(null);
-      const agg = useMemo(() => aggregate(tx.filter(t => t.kind === kind)), [tx, kind]);
+      const [sheet, setSheet] = useState(false);
+      const [limit, setLimit] = useState(30);
+      const isExp = kind === 'expense';
+      const range = useMemo(() => smartRange(f, month), [f, month]);
+      const list = useMemo(() => smartFilterTx(pool, kind, f, user, range), [pool, kind, f, user, range]);
+      // «Все валюты» — в базовой валюте из Настроек (по курсу системы); нет курса — в EUR
+      const base = baseCurrency && (baseCurrency === 'EUR' || (rates && rates[baseCurrency])) ? baseCurrency : 'EUR';
+      const allRate = base === 'EUR' ? 1 : rates[base];
+      const totals = useMemo(() => smartTotals(list, f.currency, allRate), [list, f.currency, allRate]);
+      const agg = useMemo(() => smartCategories(list, f.currency, allRate), [list, f.currency, allRate]);
+      const unit = f.currency === 'ALL' ? base : f.currency;
       const budgetMap = useMemo(() => {
         const m = {};
         (budgets || []).forEach(b => { m[b.category.toLowerCase()] = b; });
         return m;
       }, [budgets]);
-      const isExp = kind === 'expense';
-
-      if (!agg.items.length) {
-        return html`
-          <div className="fade-in text-center py-16">
-            <div className="text-5xl mb-3">${isExp ? '🧾' : '💰'}</div>
-            <div className="text-slate-400 text-sm">${isExp ? 'Расходов' : 'Доходов'} за ${monthTitle(month).toLowerCase()} нет</div>
-          </div>`;
-      }
+      // Месячные лимиты — только для «1 мес» во «Все валюты» (лимиты заданы в EUR на календарный месяц)
+      const budgetsOn = showBudgets && isExp && f.periodPreset === '1M' && f.currency === 'ALL';
+      const beforeWindow = periodFrom && range.from < periodFrom && f.periodPreset === 'CUSTOM';
+      useEffect(() => { setOpen(null); setLimit(30); }, [f, user]);
 
       return html`
         <div className="space-y-4 fade-in">
+          <${SmartFilterBar} f=${f} onChange=${setFilter} onOpenPeriod=${() => setSheet(true)} range=${range} />
+
           <${Card} className="p-5">
-            <${Donut} items=${agg.items} total=${agg.total} label=${isExp ? 'Расходы' : 'Доходы'} />
-            <div className="flex flex-wrap justify-center gap-x-3 gap-y-1.5 mt-4">
-              ${agg.items.slice(0, 8).map(i => html`
-                <div key=${i.category} className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                  <span className="w-2 h-2 rounded-full" style=${{ background: i.color }}></span>${i.category}
-                </div>`)}
+            <div className="text-xs uppercase tracking-widest text-slate-400">${isExp ? 'Итого потрачено' : 'Итого получено'} · ${range.label}</div>
+            <div className=${'text-3xl font-semibold num mt-2 tracking-tight ' + (isExp ? 'text-rose-200' : 'text-emerald-200')}>
+              ${f.currency === 'ALL' ? '' : 'Всего: '}${money(totals.total, unit)}
             </div>
+            ${f.currency === 'ALL' && totals.byCurrency.length ? html`
+              <div className="text-[12px] text-slate-400 num mt-1.5 leading-relaxed">${totals.byCurrency.map(x => money(x.amount, x.currency)).join(' · ')}</div>` : null}
+            <div className="text-[11px] text-slate-500 mt-1">${totals.count} опер.${f.currency === 'ALL' && totals.byCurrency.some(x => x.currency !== base) ? ' · итог в ' + base + ' по курсу системы' : ''}</div>
           <//>
 
-          <${Card} className="divide-y divide-white/5 overflow-hidden">
-            ${agg.items.map(i => {
-              const b = showBudgets && isExp ? budgetMap[i.category.toLowerCase()] : null;
-              const bp = b ? Math.min(100, b.spent / b.limit * 100) : 0;
-              const expanded = open === i.category;
-              return html`
-                <div key=${i.category}>
-                  <button className="w-full text-left px-4 py-3 active:bg-white/5 transition"
-                    onClick=${() => { haptic(); setOpen(expanded ? null : i.category); }}>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style=${{ background: i.color }}></span>
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium truncate">${i.category}</div>
-                          <div className="text-[11px] text-slate-500">${i.count} опер.</div>
+          ${beforeWindow ? html`<div className="text-[11px] text-amber-300 px-1">Операции доступны с ${dm(periodFrom)}.${periodFrom.slice(0, 4)} — более ранние даты не загружены.</div>` : null}
+
+          ${!list.length ? html`
+            <${Card} className="p-8 text-center">
+              <div className="text-4xl mb-3">${isExp ? '🧾' : '💰'}</div>
+              <div className="text-slate-400 text-sm">Нет операций за выбранный период</div>
+              <div className="text-[11px] text-slate-600 mt-1">${range.label}${f.currency === 'ALL' ? '' : ' · ' + f.currency}</div>
+            <//>` : html`
+            <${Card} className="p-5">
+              <${Donut} items=${agg.items} total=${agg.total} label=${isExp ? 'Расходы' : 'Доходы'} currency=${unit} />
+              <div className="flex flex-wrap justify-center gap-x-3 gap-y-1.5 mt-4">
+                ${agg.items.slice(0, 8).map(i => html`
+                  <div key=${i.category} className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <span className="w-2 h-2 rounded-full" style=${{ background: i.color }}></span>${i.category}
+                  </div>`)}
+              </div>
+            <//>
+
+            <${Card} className="divide-y divide-white/5 overflow-hidden">
+              ${agg.items.map(i => {
+                const b = budgetsOn ? budgetMap[i.category.toLowerCase()] : null;
+                const bp = b ? Math.min(100, b.spent / b.limit * 100) : 0;
+                const expanded = open === i.category;
+                return html`
+                  <div key=${i.category}>
+                    <button className="w-full text-left px-4 py-3 active:bg-white/5 transition"
+                      onClick=${() => { haptic(); setOpen(expanded ? null : i.category); }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style=${{ background: i.color }}></span>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">${i.category}</div>
+                            <div className="text-[11px] text-slate-500">${i.count} опер.</div>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-sm font-semibold num">${money(i.value, unit)}</div>
+                          <div className="text-[11px] text-slate-500 num">${fmt(i.pct, 1)}%</div>
                         </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <div className="text-sm font-semibold num">${money(i.eur, 'EUR')}</div>
-                        <div className="text-[11px] text-slate-500 num">${fmt(i.pct, 1)}%</div>
+                      <div className="h-1.5 rounded-full bg-white/5 mt-2.5 overflow-hidden">
+                        <div className="h-full rounded-full bar-fill" style=${{ width: Math.max(1.5, i.pct) + '%', background: i.color }}></div>
                       </div>
-                    </div>
-                    <div className="h-1.5 rounded-full bg-white/5 mt-2.5 overflow-hidden">
-                      <div className="h-full rounded-full bar-fill" style=${{ width: Math.max(1.5, i.pct) + '%', background: i.color }}></div>
-                    </div>
-                    ${b ? html`
-                      <div className="flex items-center justify-between mt-2 text-[11px] num">
-                        <span className=${bp >= 100 ? 'text-rose-300' : bp >= 80 ? 'text-amber-300' : 'text-slate-500'}>
-                          Бюджет ${fmt(b.spent)} / ${fmt(b.limit)} €
-                        </span>
-                        <span className=${'px-1.5 py-0.5 rounded-md ' + (bp >= 100 ? 'bg-rose-500/15 text-rose-300' : bp >= 80 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/10 text-emerald-300')}>
-                          ${bp >= 100 ? 'превышен' : 'осталось ' + fmt(b.limit - b.spent) + ' €'}
-                        </span>
+                      ${b ? html`
+                        <div className="flex items-center justify-between mt-2 text-[11px] num">
+                          <span className=${bp >= 100 ? 'text-rose-300' : bp >= 80 ? 'text-amber-300' : 'text-slate-500'}>Бюджет ${fmt(b.spent)} / ${fmt(b.limit)} €</span>
+                          <span className=${'px-1.5 py-0.5 rounded-md ' + (bp >= 100 ? 'bg-rose-500/15 text-rose-300' : bp >= 80 ? 'bg-amber-500/15 text-amber-300' : 'bg-emerald-500/10 text-emerald-300')}>
+                            ${bp >= 100 ? 'превышен' : 'осталось ' + fmt(b.limit - b.spent) + ' €'}
+                          </span>
+                        </div>` : null}
+                    </button>
+                    ${expanded ? html`
+                      <div className="bg-black/20 px-4 py-2 fade-in">
+                        ${i.items.slice(0, 50).map(t => html`<${SmartTxRow} key=${t.id} t=${t} fallback=${i.category} />`)}
                       </div>` : null}
-                  </button>
-                  ${expanded ? html`
-                    <div className="bg-black/20 px-4 py-2 fade-in">
-                      ${i.items.slice(0, 50).map(t => html`
-                        <div key=${t.id} className="flex items-center justify-between gap-3 py-2 border-b border-white/5 last:border-0">
-                          <div className="min-w-0">
-                            <div className="text-[13px] truncate">${t.merchant || i.category}</div>
-                            <div className="text-[11px] text-slate-500">${shortDate(t.date)} · ${t.user} · ${t.account}</div>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <div className="text-[13px] num">${money(t.amount, t.currency)}</div>
-                            ${t.currency !== 'EUR' ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(t.eur, 'EUR')}</div>` : null}
-                          </div>
-                        </div>`)}
-                    </div>` : null}
-                </div>`;
-            })}
-          <//>
-          ${!showBudgets && isExp ? html`<div className="text-[11px] text-slate-600 text-center">Лимиты бюджета показываются в режиме «Все»</div>` : null}
+                  </div>`;
+              })}
+            <//>
+            ${isExp && !budgetsOn ? html`<div className="text-[11px] text-slate-600 text-center">${showBudgets ? 'Лимиты бюджета показываются для «1 мес» во «Все валюты»' : 'Лимиты бюджета показываются в режиме «Все»'}</div>` : null}
+
+            <div>
+              <div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">Операции</div>
+              <${Card} className="px-4 py-1">
+                ${list.slice(0, limit).map(t => html`<${SmartTxRow} key=${t.id} t=${t} fallback=${t.category} showCategory=${true} />`)}
+              <//>
+              ${list.length > limit ? html`
+                <button onClick=${() => { haptic(); setLimit(limit + 30); }}
+                  className="w-full mt-2 py-2.5 rounded-2xl bg-white/5 border border-white/5 text-sm text-slate-300 active:bg-white/10">Показать ещё (${list.length - limit})</button>` : null}
+            </div>`}
+
+          ${sheet ? html`<${PeriodSheet} f=${f} range=${range}
+            onClose=${() => setSheet(false)}
+            onApply=${(from, to) => { setFilter(Object.assign({}, f, { periodPreset: 'CUSTOM', customFrom: from <= to ? from : to, customTo: from <= to ? to : from })); setSheet(false); }}
+            onReset=${() => { setFilter(Object.assign({}, f, { periodPreset: '1M', customFrom: null, customTo: null })); setSheet(false); }} />` : null}
+        </div>`;
+    }
+
+    function SmartTxRow({ t, fallback, showCategory }) {
+      return html`
+        <div className="flex items-center justify-between gap-3 py-2 border-b border-white/5 last:border-0">
+          <div className="min-w-0">
+            <div className="text-[13px] truncate">${t.merchant || fallback}</div>
+            <div className="text-[11px] text-slate-500 truncate">${shortDate(t.date)}${showCategory ? ' · ' + t.category : ''} · ${t.user} · ${t.account}</div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-[13px] num">${money(t.amount, t.currency)}</div>
+            ${t.currency !== 'EUR' ? html`<div className="text-[11px] text-slate-500 num">≈ ${money(t.eur, 'EUR')}</div>` : null}
+          </div>
         </div>`;
     }
 
@@ -846,6 +1057,209 @@
         </div>`;
     }
 
+    /* ============================== ⚙️ Настройки ============================== */
+
+    const SETTINGS_DEFAULT = { hideZero: true, baseCurrency: 'EUR', notifyPartner: true };
+    const LIMIT_PERIODS = [{ value: 'DAY', label: 'День' }, { value: 'WEEK', label: 'Неделя' }, { value: 'MONTH', label: 'Месяц' }];
+    const PERIOD_TEXT = { DAY: 'день', WEEK: 'неделя', MONTH: 'месяц' };
+    const LIMIT_CURRENCIES = ['EUR', 'RSD', 'USD', 'RUB'];
+
+    /** Зелёный → жёлтый (≥ 80%) → красный (> 100%). */
+    function limitTone(spent, amount) {
+      const pct = amount > 0 ? spent / amount * 100 : 0;
+      if (spent > amount + 0.005) return { pct, bar: 'bg-rose-400', text: 'text-rose-300', badge: 'bg-rose-500/15 text-rose-300', label: 'превышен' };
+      if (pct >= 80) return { pct, bar: 'bg-amber-400', text: 'text-amber-300', badge: 'bg-amber-500/15 text-amber-300', label: 'почти' };
+      return { pct, bar: 'bg-emerald-400', text: 'text-emerald-300', badge: 'bg-emerald-500/10 text-emerald-300', label: 'в норме' };
+    }
+
+    function Toggle({ checked, onChange, disabled, label }) {
+      return html`
+        <button role="switch" aria-checked=${checked} aria-label=${label} disabled=${disabled}
+          onClick=${() => { haptic(); onChange(!checked); }}
+          className=${'relative shrink-0 w-12 h-7 rounded-full transition-colors duration-200 disabled:opacity-50 ' + (checked ? 'bg-sky-400' : 'bg-white/15')}>
+          <span className=${'absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white shadow transition-transform duration-200 ' + (checked ? 'translate-x-5' : '')}></span>
+        </button>`;
+    }
+
+    function SettingRow({ title, hint, children }) {
+      return html`
+        <div className="px-4 py-3.5 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">${title}</div>
+            ${hint ? html`<div className="text-[11px] text-slate-500 mt-0.5 leading-snug">${hint}</div>` : null}
+          </div>
+          ${children}
+        </div>`;
+    }
+
+    function SectionTitle({ children }) {
+      return html`<div className="px-1 mb-2 text-xs uppercase tracking-widest text-slate-500">${children}</div>`;
+    }
+
+    function LimitForm({ initial, categories, users, busy, onSave, onDelete, onCancel }) {
+      const [f, setF] = useState(initial);
+      const set = patch => setF(Object.assign({}, f, patch));
+      const amount = Number(String(f.amount || '').replace(/\s/g, '').replace(',', '.'));
+      const valid = f.category && amount > 0;
+      const scopes = [{ value: 'FAMILY', label: 'Семья' }].concat(users.map(u => ({ value: u.name, label: u.name })));
+      const isNew = !f.id;
+      return html`
+        <div className="px-4 py-4 space-y-3 bg-black/20 fade-in">
+          ${isNew ? html`
+            <label className="block">
+              <span className="text-[11px] text-slate-400">Категория</span>
+              <select value=${f.category} onChange=${e => set({ category: e.target.value })} className="sf-date">
+                <option value="">— выберите —</option>
+                ${categories.map(c => html`<option key=${c} value=${c}>${c}</option>`)}
+              </select>
+            </label>` : null}
+          <label className="block">
+            <span className="text-[11px] text-slate-400">Лимит</span>
+            <div className="flex gap-2 mt-1">
+              <input type="text" inputMode="decimal" value=${f.amount} placeholder="10000" onChange=${e => set({ amount: e.target.value })}
+                className="sf-date !mt-0 flex-1 num" />
+              <select value=${f.currency} onChange=${e => set({ currency: e.target.value })} className="sf-date !mt-0 !w-24">
+                ${LIMIT_CURRENCIES.map(c => html`<option key=${c} value=${c}>${c}</option>`)}
+              </select>
+            </div>
+          </label>
+          ${isNew ? html`
+            <div>
+              <div className="text-[11px] text-slate-400 mb-1">Период</div>
+              <${Segmented} options=${LIMIT_PERIODS} value=${f.period} onChange=${v => set({ period: v })} size="sm" />
+            </div>
+            <div>
+              <div className="text-[11px] text-slate-400 mb-1">Чьи траты</div>
+              <${Segmented} options=${scopes} value=${f.scope} onChange=${v => set({ scope: v })} size="sm" />
+            </div>` : null}
+          <div className=${'grid gap-2 ' + (isNew ? 'grid-cols-2' : 'grid-cols-3')}>
+            <button onClick=${onCancel} disabled=${busy} className="py-2.5 rounded-2xl bg-white/5 border border-white/10 text-sm text-slate-300 active:bg-white/10">Отмена</button>
+            ${!isNew ? html`<button onClick=${() => onDelete(f)} disabled=${busy} className="py-2.5 rounded-2xl bg-rose-500/15 border border-rose-500/20 text-sm text-rose-300 active:bg-rose-500/25 disabled:opacity-40">Удалить</button>` : null}
+            <button onClick=${() => onSave(Object.assign({}, f, { amount: amount }))} disabled=${!valid || busy}
+              className="py-2.5 rounded-2xl bg-sky-400 text-slate-900 text-sm font-semibold active:scale-[.98] transition disabled:opacity-40">${busy ? '…' : 'Сохранить'}</button>
+          </div>
+        </div>`;
+    }
+
+    function SettingsTab({ data, settings, onSettings, savingKey, limits, setLimits, users }) {
+      const [editing, setEditing] = useState(null); // id лимита или 'new'
+      const [busy, setBusy] = useState(false);
+      const [note, setNote] = useState(null);       // { ok, text }
+      const [backup, setBackup] = useState(null);
+      const categories = data.expenseCategories && data.expenseCategories.length ? data.expenseCategories : Array.from(new Set((limits || []).map(l => l.category)));
+      const s = Object.assign({}, SETTINGS_DEFAULT, settings || {});
+
+      async function run(action, payload, okText) {
+        setBusy(true);
+        setNote(null);
+        try {
+          const j = await apiPost(action, payload);
+          if (j.limits) setLimits(j.limits);
+          setEditing(null);
+          if (okText) setNote({ ok: true, text: okText });
+          try { if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
+          return j;
+        } catch (e) {
+          setNote({ ok: false, text: e && e.message ? e.message : String(e) });
+          try { if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('error'); } catch (er) {}
+          return null;
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function doBackup() {
+        haptic();
+        const j = await run('backup', {}, null);
+        if (j && j.backup) setBackup(j.backup);
+      }
+
+      return html`
+        <div className="space-y-5 fade-in">
+          ${note ? html`
+            <div className=${'rounded-2xl px-3 py-2 text-xs border ' + (note.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-200' : 'bg-rose-500/10 border-rose-500/20 text-rose-200')}>${note.text}</div>` : null}
+
+          <div>
+            <${SectionTitle}>🎯 Лимиты расходов<//>
+            <${Card} className="divide-y divide-white/5 overflow-hidden">
+              ${!(limits || []).length && editing !== 'new' ? html`
+                <div className="px-4 py-5 text-center">
+                  <div className="text-sm text-slate-400">Лимитов пока нет</div>
+                  <div className="text-[11px] text-slate-600 mt-1">Или в чате: /setlimit Кофе 10000 RSD месяц семья</div>
+                </div>` : null}
+              ${(limits || []).map(l => {
+                const tone = limitTone(l.spent, l.amount);
+                return html`
+                  <div key=${l.id}>
+                    <button className="w-full text-left px-4 py-3 active:bg-white/5 transition" onClick=${() => { haptic(); setEditing(editing === l.id ? null : l.id); }}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">${l.category}</div>
+                          <div className="text-[11px] text-slate-500">${PERIOD_TEXT[l.period] || l.period} · ${l.scope === 'FAMILY' ? 'семья' : l.scope}</div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className=${'text-sm font-semibold num ' + tone.text}>${money(l.spent, l.currency)} <span className="text-slate-500 font-normal">/ ${money(l.amount, l.currency)}</span></div>
+                          <span className=${'text-[10px] px-1.5 py-0.5 rounded-md num ' + tone.badge}>${fmt(tone.pct, 0)}% · ${tone.label}</span>
+                        </div>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-white/5 mt-2.5 overflow-hidden">
+                        <div className=${'h-full rounded-full bar-fill ' + tone.bar} style=${{ width: Math.max(2, Math.min(100, tone.pct)) + '%' }}></div>
+                      </div>
+                    </button>
+                    ${editing === l.id ? html`<${LimitForm} key=${'e' + l.id} initial=${{ id: l.id, category: l.category, amount: String(l.amount), currency: l.currency, period: l.period, scope: l.scope }}
+                      categories=${categories} users=${users} busy=${busy}
+                      onCancel=${() => setEditing(null)}
+                      onSave=${v => run('saveLimit', { limit: v }, '✅ Лимит «' + v.category + '» обновлён')}
+                      onDelete=${v => run('deleteLimit', { id: v.id }, '🗑 Лимит «' + v.category + '» удалён')} />` : null}
+                  </div>`;
+              })}
+              ${editing === 'new' ? html`<${LimitForm} key="new" initial=${{ category: '', amount: '', currency: s.baseCurrency || 'EUR', period: 'MONTH', scope: 'FAMILY' }}
+                categories=${categories} users=${users} busy=${busy}
+                onCancel=${() => setEditing(null)}
+                onSave=${v => run('saveLimit', { limit: v }, '✅ Лимит «' + v.category + '» сохранён')} />` : html`
+                <button onClick=${() => { haptic(); setNote(null); setEditing('new'); }} className="w-full px-4 py-3 text-sm text-sky-300 text-left active:bg-white/5">＋ Добавить лимит</button>`}
+            <//>
+            <div className="text-[11px] text-slate-600 px-1 mt-1.5 leading-snug">Траты считаются за текущий день / неделю (с понедельника) / месяц в валюте лимита. При 80% — предупреждение в карточке, при превышении — алерт автору и супругу.</div>
+          </div>
+
+          <div>
+            <${SectionTitle}>👁 Отображение<//>
+            <${Card} className="divide-y divide-white/5 overflow-hidden">
+              <${SettingRow} title="Скрывать счета с нулевым балансом" hint="В капитал они входят в любом случае">
+                <${Toggle} label="Скрывать счета с нулевым балансом" checked=${s.hideZero} disabled=${savingKey === 'hideZero'} onChange=${v => onSettings({ hideZero: v })} />
+              <//>
+              <div className="px-4 py-3.5">
+                <div className="text-sm font-medium">Базовая валюта интерфейса</div>
+                <div className="text-[11px] text-slate-500 mt-0.5 mb-2.5">Капитал на вкладке «Счета» и итоги «Все валюты» в расходах и доходах</div>
+                <${Segmented} options=${CONFIG.CURRENCIES.map(c => ({ value: c, label: c }))} value=${s.baseCurrency} onChange=${v => onSettings({ baseCurrency: v })} size="sm" />
+              </div>
+            <//>
+          </div>
+
+          <div>
+            <${SectionTitle}>🔔 Семейные уведомления<//>
+            <${Card} className="overflow-hidden">
+              <${SettingRow} title="Оповещать меня о превышении лимитов партнёром" hint="Личное сообщение от бота, когда трата супруга(и) выводит категорию за лимит">
+                <${Toggle} label="Оповещать о превышении лимитов партнёром" checked=${s.notifyPartner} disabled=${savingKey === 'notifyPartner'} onChange=${v => onSettings({ notifyPartner: v })} />
+              <//>
+            <//>
+          </div>
+
+          <div>
+            <${SectionTitle}>🛠 Обслуживание<//>
+            <${Card} className="p-4">
+              <div className="text-sm font-medium">Резервная копия</div>
+              <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">Копии листов Accounts, Transactions, Crypto_Trades и Limits в той же таблице (Backup_Now_…). Хранятся 5 последних.</div>
+              <button onClick=${doBackup} disabled=${busy}
+                className="w-full mt-3 py-3 rounded-2xl bg-white text-slate-900 text-sm font-semibold active:scale-[.98] transition disabled:opacity-50">${busy && !editing ? 'Создаю копию…' : '💾 Backup_Now'}</button>
+              ${backup ? html`<div className="text-[11px] text-emerald-300 mt-2 num">✅ ${backup.at}: ${backup.sheets.length} листа${backup.removed ? ' · удалено старых: ' + backup.removed : ''}</div>` : null}
+            <//>
+          </div>
+
+          <div className="text-[11px] text-slate-600 text-center pb-2">Настройки личные: у каждого члена семьи свои</div>
+        </div>`;
+    }
+
     function Skeleton() {
       return html`
         <div className="space-y-4">
@@ -870,10 +1284,44 @@
       const [user, setUser] = useState('all');
       const [tab, setTab] = useState('accounts');
       const [currency, setCurrency] = useState('EUR');
+      // Умный фильтр: отдельное состояние для «Расходов» и «Доходов», живёт при переключении вкладок
+      const [smartFilter, setSmartFilter] = useState({ expense: SMART_DEFAULT, income: SMART_DEFAULT });
+      const setTabFilter = kind => next => setSmartFilter(prev => Object.assign({}, prev, { [kind]: next }));
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState('');
       const reqId = useRef(0);
+      // Личные настройки (⚙️): приходят с дашбордом, сохраняются doPost?action=saveSettings
+      const [settings, setSettings] = useState(SETTINGS_DEFAULT);
+      const [savingKey, setSavingKey] = useState('');
+      const currencyTouched = useRef(false);
+      const pickCurrency = c => { currencyTouched.current = true; setCurrency(c); };
+
+      useEffect(() => {
+        if (!data || !data.settings) return;
+        setSettings(Object.assign({}, SETTINGS_DEFAULT, data.settings));
+        if (!currencyTouched.current && data.settings.baseCurrency) setCurrency(data.settings.baseCurrency);
+      }, [data && data.settings]);
+
+      const settingsRef = useRef(settings);
+      settingsRef.current = settings;
+      const saveSettings = useCallback(async patch => {
+        const key = Object.keys(patch)[0];
+        const prev = settingsRef.current;
+        setSettings(Object.assign({}, prev, patch));
+        if (patch.baseCurrency) { currencyTouched.current = false; setCurrency(patch.baseCurrency); }
+        setSavingKey(key);
+        try {
+          const j = await apiPost('saveSettings', { settings: patch });
+          setSettings(Object.assign({}, SETTINGS_DEFAULT, j.settings));
+        } catch (e) {
+          if (prev) setSettings(prev);
+          setError('Настройка не сохранена: ' + (e && e.message ? e.message : e));
+        } finally {
+          setSavingKey('');
+        }
+      }, []);
+      const setLimits = useCallback(list => setData(d => (d ? Object.assign({}, d, { limits: list }) : d)), []);
 
       const load = useCallback(async m => {
         const id = ++reqId.current;
@@ -897,20 +1345,26 @@
         if (!data) return [];
         return data.monthTx.filter(t => matchUser(t, user));
       }, [data, user]);
+      const pool = useMemo(() => (data ? pnlPool(data) : []), [data]);
 
       let content = null;
       if (error && !data) content = html`<${ErrorBox} message=${error} onRetry=${() => load(month)} />`;
       else if (!data) content = html`<${Skeleton} />`;
-      else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${setCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} setTab=${setTab} />`;
-      else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" tx=${monthTx} budgets=${data.budgets} showBudgets=${user === 'all'} month=${month} />`;
-      else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" tx=${monthTx} budgets=${[]} showBudgets=${false} month=${month} />`;
+      else if (tab === 'accounts') content = html`<${AccountsTab} data=${data} currency=${currency} setCurrency=${pickCurrency} monthTx=${monthTx} month=${month} user=${user} users=${users} setTab=${setTab} hideZero=${settings.hideZero} />`;
+      else if (tab === 'expense') content = html`<${CategoryTab} key="expense" kind="expense" pool=${pool} user=${user} month=${month} periodFrom=${data.periodFrom}
+        filter=${smartFilter.expense} setFilter=${setTabFilter('expense')} budgets=${data.budgets} showBudgets=${user === 'all'} baseCurrency=${settings.baseCurrency} rates=${data.rates} />`;
+      else if (tab === 'income') content = html`<${CategoryTab} key="income" kind="income" pool=${pool} user=${user} month=${month} periodFrom=${data.periodFrom}
+        filter=${smartFilter.income} setFilter=${setTabFilter('income')} budgets=${[]} showBudgets=${false} baseCurrency=${settings.baseCurrency} rates=${data.rates} />`;
       else if (tab === 'crypto') content = html`<${CryptoTab} data=${data} user=${user} users=${users} />`;
+      else if (tab === 'settings') content = html`<${SettingsTab} data=${data} settings=${settings} onSettings=${saveSettings} savingKey=${savingKey}
+        limits=${data.limits || []} setLimits=${setLimits} users=${users} />`;
       else content = html`<${HistoryTab} history=${data.history} user=${user} />`;
 
       return html`
         <div className="min-h-screen">
           <${Header} month=${month} setMonth=${setMonth} months=${data ? data.months : []} user=${user} setUser=${setUser}
-            users=${users} loading=${loading} onRefresh=${() => { haptic(); load(month); }} showMonth=${tab !== 'history' && tab !== 'crypto'} />
+            users=${users} loading=${loading} onRefresh=${() => { haptic(); load(month); }} showMonth=${tab !== 'history' && tab !== 'crypto' && tab !== 'settings' && !((tab === 'expense' || tab === 'income') && smartFilter[tab].periodPreset !== '1M')}
+            showUsers=${tab !== 'settings'} />
           <main className="px-4 pt-4" style=${{ paddingBottom: 'calc(96px + var(--app-bottom))' }}>
             ${error && data ? html`<div className="mb-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-200 text-xs px-3 py-2">${error}</div>` : null}
             <div className=${loading && data ? 'opacity-60 transition-opacity' : 'transition-opacity'}>${content}</div>
